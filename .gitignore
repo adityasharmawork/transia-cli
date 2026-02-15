@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.transia-state.json
+.transia-state.json.bak
+.env
+.env.local
+.env.*.local
+*.tgz
