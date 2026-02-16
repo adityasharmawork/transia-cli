@@ -19,6 +19,7 @@ import { generateOutputFiles } from "../output/formats.js";
 import { writeOutputFiles } from "../output/writer.js";
 import { validateTranslation } from "../output/validator.js";
 import { loadApiKey, clearKeys } from "../utils/keys.js";
+import { logUsage } from "../api/client.js";
 import { logger } from "../utils/logger.js";
 import { TransiaError, ExitCode } from "../utils/errors.js";
 
@@ -48,9 +49,9 @@ export async function translateCommand(
     : config.targetLocales;
   const providerName = options.provider ?? config.provider.name;
 
-  // Load API key (skip for dry-run since we won't call any API)
+  // Load API key (skip for dry-run and managed provider)
   let apiKey = "";
-  if (!options.dryRun) {
+  if (!options.dryRun && providerName !== "managed") {
     apiKey = loadApiKey(projectRoot, providerName, config.provider.apiKeyEnv);
   }
 
@@ -189,6 +190,7 @@ export async function translateCommand(
       providerName,
       apiKey,
       config.provider.model,
+      projectRoot,
     );
     provider = p;
 
@@ -330,6 +332,18 @@ export async function translateCommand(
 
     if (failedBatches > 0) {
       process.exitCode = ExitCode.PARTIAL_ERROR;
+    }
+
+    // H5: Log usage to server (best-effort)
+    if (totalTranslated > 0) {
+      for (const locale of targetLocales) {
+        await logUsage({
+          stringsTranslated: totalTranslated,
+          tokensUsed: totalTokens,
+          provider: providerName,
+          locale,
+        });
+      }
     }
   } finally {
     provider?.destroy();

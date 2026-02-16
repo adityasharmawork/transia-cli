@@ -24,11 +24,13 @@ import { OpenAIProvider } from "./openai.js";
 import { AnthropicProvider } from "./anthropic.js";
 import { GeminiProvider } from "./gemini.js";
 import { GrokProvider } from "./grok.js";
+import { ManagedProvider } from "./managed.js";
 
 export function createProvider(
   name: string,
   apiKey: string,
   model?: string,
+  projectRoot?: string,
 ): AIProvider {
   switch (name) {
     case "openai":
@@ -39,10 +41,12 @@ export function createProvider(
       return new GeminiProvider(apiKey, model);
     case "grok":
       return new GrokProvider(apiKey, model);
+    case "managed":
+      return new ManagedProvider(projectRoot ?? process.cwd());
     default:
       throw new TransiaError(
         ExitCode.CONFIG_ERROR,
-        `Unknown provider: "${name}". Supported providers: openai, anthropic, gemini, grok`,
+        `Unknown provider: "${name}". Supported providers: openai, anthropic, gemini, grok, managed`,
       );
   }
 }

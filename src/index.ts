@@ -7,6 +7,9 @@ import { initCommand } from "./commands/init.js";
 import { translateCommand } from "./commands/translate.js";
 import { statusCommand } from "./commands/status.js";
 import { resetCommand } from "./commands/reset.js";
+import { loginCommand } from "./commands/login.js";
+import { logoutCommand } from "./commands/logout.js";
+import { requireAuth } from "./api/auth-guard.js";
 import { TransiaError } from "./utils/errors.js";
 import { logger } from "./utils/logger.js";
 
@@ -46,10 +49,33 @@ program
   .version(version);
 
 program
+  .command("login")
+  .description("Log in to your Transia account")
+  .action(async () => {
+    try {
+      await loginCommand();
+    } catch (error) {
+      handleError(error);
+    }
+  });
+
+program
+  .command("logout")
+  .description("Log out of your Transia account")
+  .action(async () => {
+    try {
+      await logoutCommand();
+    } catch (error) {
+      handleError(error);
+    }
+  });
+
+program
   .command("init")
   .description("Initialize Transia in your project")
   .action(async () => {
     try {
+      await requireAuth();
       await initCommand(process.cwd());
     } catch (error) {
       handleError(error);
@@ -72,6 +98,7 @@ program
   .option("-v, --verbose", "Enable debug logging")
   .action(async (options) => {
     try {
+      await requireAuth();
       await translateCommand(process.cwd(), options);
     } catch (error) {
       handleError(error);
@@ -83,6 +110,7 @@ program
   .description("Show translation coverage for all target locales")
   .action(async () => {
     try {
+      await requireAuth();
       await statusCommand(process.cwd());
     } catch (error) {
       handleError(error);
@@ -96,6 +124,7 @@ program
   .option("--output", "Also delete generated translation files")
   .action(async (options) => {
     try {
+      await requireAuth();
       await resetCommand(process.cwd(), options);
     } catch (error) {
       handleError(error);
