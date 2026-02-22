@@ -71,7 +71,11 @@ export async function initCliSession(): Promise<{ sessionToken: string }> {
 export async function pollCliSession(
   sessionToken: string,
 ): Promise<{ status: string; authToken?: string; email?: string }> {
-  return apiRequest(`/api/auth/cli/status?session=${sessionToken}`, {
+  // Send session token in POST body instead of query params to avoid
+  // leaking tokens in server access logs, CDN logs, and browser history.
+  return apiRequest("/api/auth/cli/status", {
+    method: "POST",
+    body: { session: sessionToken },
     auth: false,
   });
 }

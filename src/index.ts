@@ -7,6 +7,9 @@ import { initCommand } from "./commands/init.js";
 import { translateCommand } from "./commands/translate.js";
 import { statusCommand } from "./commands/status.js";
 import { resetCommand } from "./commands/reset.js";
+import { applyCommand } from "./commands/apply.js";
+import { setupCommand } from "./commands/setup.js";
+import { widgetCommand } from "./commands/widget.js";
 import { loginCommand } from "./commands/login.js";
 import { logoutCommand } from "./commands/logout.js";
 import { requireAuth } from "./api/auth-guard.js";
@@ -126,6 +129,52 @@ program
     try {
       await requireAuth();
       await resetCommand(process.cwd(), options);
+    } catch (error) {
+      handleError(error);
+    }
+  });
+
+program
+  .command("apply")
+  .description(
+    "Rewrite source files to replace hardcoded strings with t() calls",
+  )
+  .option("-d, --dry-run", "Show what would be changed without modifying files")
+  .option("-v, --verbose", "Enable debug logging")
+  .action(async (options) => {
+    try {
+      await requireAuth();
+      await applyCommand(process.cwd(), options);
+    } catch (error) {
+      handleError(error);
+    }
+  });
+
+program
+  .command("setup")
+  .description(
+    "Auto-configure i18n library (next-intl or i18next) in your project",
+  )
+  .option("-v, --verbose", "Enable debug logging")
+  .action(async (options) => {
+    try {
+      await requireAuth();
+      await setupCommand(process.cwd(), options);
+    } catch (error) {
+      handleError(error);
+    }
+  });
+
+program
+  .command("widget")
+  .description(
+    "Add the Transia language switcher widget to your app",
+  )
+  .option("-v, --verbose", "Enable debug logging")
+  .action(async (options) => {
+    try {
+      await requireAuth();
+      await widgetCommand(process.cwd(), options);
     } catch (error) {
       handleError(error);
     }

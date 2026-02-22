@@ -13,6 +13,16 @@ const SECRET_FILTERS: Array<{ pattern: RegExp; label: string }> = [
   { pattern: /xai-[a-zA-Z0-9]{20,}/g, label: "XAI_KEY" },
   { pattern: /AIza[a-zA-Z0-9_-]{30,}/g, label: "GOOGLE_KEY" },
   { pattern: /AKIA[A-Z0-9]{16}/g, label: "AWS_KEY" },
+  // Stripe keys (live and test)
+  { pattern: /sk_(?:live|test)_[a-zA-Z0-9]{20,}/g, label: "STRIPE_KEY" },
+  { pattern: /rk_(?:live|test)_[a-zA-Z0-9]{20,}/g, label: "STRIPE_RESTRICTED_KEY" },
+  { pattern: /pk_(?:live|test)_[a-zA-Z0-9]{20,}/g, label: "STRIPE_PUBLISHABLE_KEY" },
+  { pattern: /whsec_[a-zA-Z0-9]{20,}/g, label: "WEBHOOK_SECRET" },
+  // GitHub and GitLab tokens
+  { pattern: /gh[pousr]_[A-Za-z0-9_]{36,}/g, label: "GITHUB_TOKEN" },
+  { pattern: /glpat-[A-Za-z0-9_-]{20,}/g, label: "GITLAB_TOKEN" },
+  // Azure
+  { pattern: /DefaultEndpointsProtocol=https;AccountName=[^\s"';]+/g, label: "AZURE_CONNECTION" },
   {
     pattern: /Bearer\s+[a-zA-Z0-9._-]{20,}/g,
     label: "BEARER_TOKEN",

@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { platform } from "node:os";
 import ora from "ora";
 import chalk from "chalk";
@@ -11,11 +11,11 @@ function openBrowser(url: string): void {
   const os = platform();
   try {
     if (os === "darwin") {
-      execSync(`open "${url}"`);
+      execFileSync("open", [url]);
     } else if (os === "win32") {
-      execSync(`start "${url}"`);
+      execFileSync("cmd", ["/c", "start", "", url]);
     } else {
-      execSync(`xdg-open "${url}"`);
+      execFileSync("xdg-open", [url]);
     }
   } catch {
     // If automatic open fails, user will use the manual link
