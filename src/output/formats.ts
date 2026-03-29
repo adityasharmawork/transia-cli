@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import type { TransiaState } from "../state/schema.js";
+import { generateKey } from "../utils/crypto.js";
 
 export type OutputFormat = "next-intl" | "i18next";
 
@@ -107,19 +108,7 @@ function generateI18nextFiles(
   return files;
 }
 
-/**
- * Generate a stable, readable key from a string with a hash suffix for uniqueness.
- * "Welcome to Dashboard" → "welcome_to_dashboard_a1b2c3"
- */
-function generateKey(original: string, hash: string): string {
-  const base = original
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, "")
-    .trim()
-    .replace(/\s+/g, "_")
-    .slice(0, 50);
-  return base ? `${base}_${hash.slice(0, 6)}` : hash.slice(0, 16);
-}
+// generateKey is imported from ../utils/crypto.js (single source of truth)
 
 /**
  * Convert flat dot-separated keys to nested object.

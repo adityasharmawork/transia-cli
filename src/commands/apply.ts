@@ -1,12 +1,13 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, relative } from "node:path";
+import { execFileSync } from "node:child_process";
 import { glob } from "glob";
 import ora from "ora";
 import chalk from "chalk";
 import { parse } from "@babel/parser";
 import { createRequire } from "node:module";
 import { loadConfig, loadState } from "../state/manager.js";
-import { hashString } from "../utils/crypto.js";
+import { hashString, generateKey } from "../utils/crypto.js";
 import { sanitizeForPrompt } from "../parser/sanitizer.js";
 import { isTranslatableAttribute, isTranslatableString } from "../parser/filters.js";
 import { logger } from "../utils/logger.js";
@@ -29,18 +30,7 @@ interface Replacement {
   type: "jsx-text" | "jsx-attr" | "string-literal" | "template-literal";
 }
 
-/**
- * Generate a stable key from original string + hash (must match formats.ts logic exactly).
- */
-function generateKey(original: string, hash: string): string {
-  const base = original
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, "")
-    .trim()
-    .replace(/\s+/g, "_")
-    .slice(0, 50);
-  return base ? `${base}_${hash.slice(0, 6)}` : hash.slice(0, 16);
-}
+// generateKey is imported from ../utils/crypto.js (single source of truth shared with formats.ts)
 
 /**
  * Build a lookup map: sanitized original text -> translation key
@@ -228,7 +218,8 @@ function findHookInsertPosition(ast: any, source: string): number | null {
     // Look for function components that return JSX
     FunctionDeclaration(path: any) {
       if (containsJSXReturn(path) && bestPosition === null) {
-        bestPosition = findBodyStart(path, source);
+        const pos = findBodyStart(path, source);
+        if (pos !== null) bestPosition = pos;
       }
     },
     ArrowFunctionExpression(path: any) {
@@ -239,7 +230,8 @@ function findHookInsertPosition(ast: any, source: string): number | null {
           parentType === "VariableDeclarator" ||
           parentType === "ExportDefaultDeclaration"
         ) {
-          bestPosition = findBodyStart(path, source);
+          const pos = findBodyStart(path, source);
+          if (pos !== null) bestPosition = pos;
         }
       }
     },
@@ -247,7 +239,8 @@ function findHookInsertPosition(ast: any, source: string): number | null {
       if (containsJSXReturn(path) && bestPosition === null) {
         const parentType = path.parent?.type;
         if (parentType === "VariableDeclarator") {
-          bestPosition = findBodyStart(path, source);
+          const pos = findBodyStart(path, source);
+          if (pos !== null) bestPosition = pos;
         }
       }
     },
@@ -280,7 +273,7 @@ function containsJSXReturn(path: any): boolean {
   return found;
 }
 
-function findBodyStart(path: any, source: string): number {
+function findBodyStart(path: any, source: string): number | null {
   const body = path.node.body;
   if (body.type === "BlockStatement") {
     // Insert after the opening brace
@@ -289,8 +282,9 @@ function findBodyStart(path: any, source: string): number {
     const afterBrace = source.indexOf("\n", openBrace);
     return afterBrace !== -1 ? afterBrace + 1 : openBrace + 1;
   }
-  // Arrow function with expression body — can't easily inject hook
-  return body.start;
+  // Arrow function with expression body (e.g., `const App = () => <div>...</div>`)
+  // Cannot safely inject a hook statement here — skip this component
+  return null;
 }
 
 /**
@@ -606,6 +600,27 @@ export async function applyCommand(
 ): Promise<void> {
   if (options.verbose) {
     logger.setLevel("debug");
+  }
+
+  // Safety check: warn if there are uncommitted changes (skip in dry-run)
+  if (!options.dryRun && existsSync(resolve(projectRoot, ".git"))) {
+    try {
+      const status = execFileSync("git", ["status", "--porcelain"], {
+        cwd: projectRoot,
+        stdio: ["pipe", "pipe", "pipe"],
+      }).toString().trim();
+      if (status.length > 0) {
+        logger.warn(
+          "You have uncommitted changes. It is recommended to commit or stash " +
+          "your changes before running 'transia apply', so you can easily " +
+          "revert with 'git checkout .' if needed."
+        );
+        logger.warn("Proceeding in 3 seconds... (use --dry-run to preview changes first)");
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+    } catch {
+      // Git not available or not a git repo — skip the check
+    }
   }
 
   // Load config and state
