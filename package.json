@@ -54,6 +54,7 @@
     "ora": "^9.3.0",
     "p-limit": "^7.3.0",
     "write-file-atomic": "^7.0.0",
+    "@inquirer/prompts": "^7.0.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {

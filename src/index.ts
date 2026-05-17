@@ -12,6 +12,7 @@ import { setupCommand } from "./commands/setup.js";
 import { widgetCommand } from "./commands/widget.js";
 import { loginCommand } from "./commands/login.js";
 import { logoutCommand } from "./commands/logout.js";
+import { smartCommand } from "./commands/smart.js";
 import { requireAuth } from "./api/auth-guard.js";
 import { TransiaError } from "./utils/errors.js";
 import { logger } from "./utils/logger.js";
@@ -49,7 +50,14 @@ program
   .description(
     "Enterprise-grade BYOK AI translation CLI for React/Next.js applications",
   )
-  .version(version);
+  .version(version)
+  .action(async () => {
+    try {
+      await smartCommand(process.cwd());
+    } catch (error) {
+      handleError(error);
+    }
+  });
 
 program
   .command("login")
@@ -76,10 +84,11 @@ program
 program
   .command("init")
   .description("Initialize Transia in your project")
-  .action(async () => {
+  .option("-y, --yes", "Accept defaults without interactive prompts")
+  .action(async (options) => {
     try {
       await requireAuth();
-      await initCommand(process.cwd());
+      await initCommand(process.cwd(), options);
     } catch (error) {
       handleError(error);
     }

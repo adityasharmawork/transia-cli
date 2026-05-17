@@ -12,6 +12,9 @@ const DEFAULT_ENV_VARS: Record<string, string> = {
   grok: "XAI_API_KEY",
 };
 
+// Priority order for auto-detection: cheapest/fastest first
+const AUTO_DETECT_ORDER = ["gemini", "grok", "openai", "anthropic"] as const;
+
 class SecureKey {
   private _value: string;
 
@@ -41,6 +44,15 @@ class SecureKey {
 }
 
 let _activeKey: SecureKey | null = null;
+let _detectedProvider: string | null = null;
+
+/**
+ * Returns the provider name that was auto-detected from env vars.
+ * Only set when provider is "auto".
+ */
+export function getDetectedProvider(): string | null {
+  return _detectedProvider;
+}
 
 /**
  * Load the API key for a specific provider from the user's .env files.
@@ -53,6 +65,7 @@ export function loadApiKey(
   projectRoot: string,
   provider: string,
   customEnvVar?: string,
+  priority?: string[],
 ): string {
   // Load .env files into process.env
   const envLocalPath = resolve(projectRoot, ".env.local");
@@ -65,12 +78,39 @@ export function loadApiKey(
     config({ path: envPath });
   }
 
+  // Handle "auto" provider: detect which API key is available
+  if (provider === "auto" && !customEnvVar) {
+    const detectOrder = priority && priority.length > 0
+      ? priority
+      : AUTO_DETECT_ORDER;
+    for (const candidate of detectOrder) {
+      const envVar = DEFAULT_ENV_VARS[candidate];
+      const key = process.env[envVar];
+      if (key) {
+        delete process.env[envVar];
+        _activeKey = new SecureKey(key);
+        _detectedProvider = candidate;
+        logger.info(`Auto-detected provider: ${candidate} (from ${envVar})`);
+        return _activeKey.value;
+      }
+    }
+    throw new TransiaError(
+      ExitCode.AUTH_ERROR,
+      `No API key found. Add one of these to your .env or .env.local file:\n\n` +
+        `  GEMINI_API_KEY=your-key       (Google Gemini)\n` +
+        `  XAI_API_KEY=your-key          (Grok)\n` +
+        `  OPENAI_API_KEY=your-key       (OpenAI)\n` +
+        `  ANTHROPIC_API_KEY=your-key    (Anthropic Claude)\n\n` +
+        `  Transia automatically detects whichever key you provide.`,
+    );
+  }
+
   // Determine which env var to read
   const envVar = customEnvVar ?? DEFAULT_ENV_VARS[provider];
   if (!envVar) {
     throw new TransiaError(
       ExitCode.CONFIG_ERROR,
-      `Unknown provider "${provider}". Supported: openai, anthropic, gemini, grok. Or set "apiKeyEnv" in your config.`,
+      `Unknown provider "${provider}". Supported: openai, anthropic, gemini, grok, auto. Or set "apiKeyEnv" in your config.`,
     );
   }
 
@@ -98,5 +138,6 @@ export function clearKeys(): void {
     _activeKey.clear();
     _activeKey = null;
   }
+  _detectedProvider = null;
   logger.debug("API keys cleared from memory");
 }
