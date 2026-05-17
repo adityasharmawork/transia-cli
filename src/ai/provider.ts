@@ -1,4 +1,5 @@
 import { TransiaError, ExitCode } from "../utils/errors.js";
+import { getDetectedProvider } from "../utils/keys.js";
 
 export interface TranslationRequest {
   strings: Array<{ key: string; original: string; context?: string | null }>;
@@ -32,7 +33,10 @@ export function createProvider(
   model?: string,
   projectRoot?: string,
 ): AIProvider {
-  switch (name) {
+  // Resolve "auto" to the provider that was detected from env vars
+  const resolvedName = name === "auto" ? (getDetectedProvider() ?? "openai") : name;
+
+  switch (resolvedName) {
     case "openai":
       return new OpenAIProvider(apiKey, model);
     case "anthropic":
@@ -46,7 +50,7 @@ export function createProvider(
     default:
       throw new TransiaError(
         ExitCode.CONFIG_ERROR,
-        `Unknown provider: "${name}". Supported providers: openai, anthropic, gemini, grok, managed`,
+        `Unknown provider: "${resolvedName}". Supported providers: openai, anthropic, gemini, grok, managed`,
       );
   }
 }

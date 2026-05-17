@@ -52,7 +52,7 @@ export async function translateCommand(
   // Load API key (skip for dry-run and managed provider)
   let apiKey = "";
   if (!options.dryRun && providerName !== "managed") {
-    apiKey = loadApiKey(projectRoot, providerName, config.provider.apiKeyEnv);
+    apiKey = loadApiKey(projectRoot, providerName, config.provider.apiKeyEnv, config.providerPriority);
   }
 
   let provider: AIProvider | null = null;

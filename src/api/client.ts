@@ -1,11 +1,30 @@
 import { loadCredentials } from "../state/credentials.js";
 import { TransiaError, ExitCode } from "../utils/errors.js";
+import { logger } from "../utils/logger.js";
 
 const DEFAULT_API_URL = "https://transia.dev";
 
+let _httpWarningShown = false;
+
 function getApiUrl(): string {
+  // Env var takes priority (useful for local development against localhost)
+  if (process.env.TRANSIA_API_URL) {
+    const url = process.env.TRANSIA_API_URL;
+    if (
+      !_httpWarningShown &&
+      !url.startsWith("https://") &&
+      !url.includes("localhost") &&
+      !url.includes("127.0.0.1")
+    ) {
+      _httpWarningShown = true;
+      logger.warn(
+        "Warning: TRANSIA_API_URL is using HTTP (not HTTPS). Your auth tokens may be sent insecurely over the network.",
+      );
+    }
+    return url;
+  }
   const credentials = loadCredentials();
-  return credentials?.apiUrl ?? process.env.TRANSIA_API_URL ?? DEFAULT_API_URL;
+  return credentials?.apiUrl ?? DEFAULT_API_URL;
 }
 
 function getAuthToken(): string {
@@ -82,6 +101,36 @@ export async function pollCliSession(
 
 export async function verifyAuth(): Promise<{ valid: boolean; email: string }> {
   return apiRequest("/api/auth/verify", { method: "POST" });
+}
+
+export async function createProject(data: {
+  name: string;
+  sourceLocale: string;
+  targetLocales: string[];
+  outputFormat: string;
+}): Promise<{
+  project: {
+    _id: string;
+    name: string;
+    publicKey: string;
+    apiKey: string;
+  };
+}> {
+  return apiRequest("/api/cli/projects", {
+    method: "POST",
+    body: data,
+  });
+}
+
+export async function listProjects(): Promise<{
+  projects: Array<{
+    _id: string;
+    name: string;
+    publicKey: string;
+    apiKeyPrefix: string;
+  }>;
+}> {
+  return apiRequest("/api/cli/projects");
 }
 
 export async function logUsage(data: {

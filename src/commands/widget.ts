@@ -87,9 +87,15 @@ function validateLocales(locales: string[]): void {
 /**
  * Generate the TransiaLanguageSwitcher wrapper for Next.js (next-intl).
  */
-function generateNextIntlWidget(locales: string[]): string {
+function generateNextIntlWidget(
+  locales: string[],
+  publicKey?: string,
+): string {
   validateLocales(locales);
   const localesList = locales.map((l) => `"${l}"`).join(", ");
+  const projectIdProp = publicKey
+    ? ` projectId="${publicKey}"`
+    : "";
   return `"use client";
 
 import { TransiaWidget } from "@transia/widget";
@@ -110,7 +116,7 @@ export function TransiaLanguageSwitcher() {
     },
   });
 
-  return <TransiaWidget {...widgetProps} />;
+  return <TransiaWidget {...widgetProps}${projectIdProp} showBranding />;
 }
 `;
 }
@@ -118,9 +124,15 @@ export function TransiaLanguageSwitcher() {
 /**
  * Generate the TransiaLanguageSwitcher wrapper for React (i18next).
  */
-function generateI18nextWidget(locales: string[]): string {
+function generateI18nextWidget(
+  locales: string[],
+  publicKey?: string,
+): string {
   validateLocales(locales);
   const localesList = locales.map((l) => `"${l}"`).join(", ");
+  const projectIdProp = publicKey
+    ? ` projectId="${publicKey}"`
+    : "";
   return `import { TransiaWidget } from "@transia/widget";
 import { createI18nextProps } from "@transia/widget/i18next";
 import { useTranslation } from "react-i18next";
@@ -134,7 +146,7 @@ export function TransiaLanguageSwitcher() {
     changeLanguage: (lng) => i18n.changeLanguage(lng),
   });
 
-  return <TransiaWidget {...widgetProps} />;
+  return <TransiaWidget {...widgetProps}${projectIdProp} showBranding />;
 }
 `;
 }
@@ -330,10 +342,13 @@ export async function widgetCommand(
 
   const widgetPath = resolve(componentsDir, "TransiaLanguageSwitcher.tsx");
   if (!existsSync(widgetPath)) {
+    const publicKey = (config as Record<string, unknown>).publicKey as
+      | string
+      | undefined;
     const widgetContent =
       config.output.format === "next-intl"
-        ? generateNextIntlWidget(allLocales)
-        : generateI18nextWidget(allLocales);
+        ? generateNextIntlWidget(allLocales, publicKey)
+        : generateI18nextWidget(allLocales, publicKey);
 
     writeFileSync(widgetPath, widgetContent, "utf-8");
     created.push(widgetPath.replace(projectRoot + "/", ""));

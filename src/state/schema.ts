@@ -3,7 +3,7 @@ import { z } from "zod";
 // --- Config schema ---
 
 export const ProviderConfigSchema = z.object({
-  name: z.enum(["openai", "anthropic", "gemini", "grok"]),
+  name: z.enum(["openai", "anthropic", "gemini", "grok", "managed", "auto"]),
   model: z.string().optional(),
   apiKeyEnv: z.string().optional(),
 });
@@ -26,9 +26,14 @@ export const TransiaConfigSchema = z.object({
       "Duplicate locales are not allowed",
     ),
   provider: ProviderConfigSchema,
+  providerPriority: z
+    .array(z.enum(["gemini", "grok", "openai", "anthropic"]))
+    .optional(),
   include: z.array(z.string()).min(1),
   exclude: z.array(z.string()).default([]),
   output: OutputConfigSchema,
+  projectId: z.string().optional(),
+  publicKey: z.string().optional(),
 });
 
 export type TransiaConfig = z.infer<typeof TransiaConfigSchema>;
@@ -73,21 +78,30 @@ export function createEmptyState(): TransiaState {
 
 // --- Default config ---
 
+export interface CreateConfigOptions {
+  detectedDirs: string[];
+  provider?: string;
+  providerPriority?: string[];
+  targetLocales?: string[];
+  outputFormat?: "next-intl" | "i18next";
+}
+
 export function createDefaultConfig(
-  detectedDirs: string[],
+  options: CreateConfigOptions,
 ): TransiaConfig {
+  const { detectedDirs, provider, providerPriority, targetLocales, outputFormat } = options;
+
   const include =
     detectedDirs.length > 0
       ? detectedDirs.map((dir) => `${dir}/**/*.{tsx,jsx}`)
       : ["src/**/*.{tsx,jsx}", "app/**/*.{tsx,jsx}"];
 
-  return {
+  const config: TransiaConfig = {
     version: 1,
     sourceLocale: "en",
-    targetLocales: ["es"],
+    targetLocales: targetLocales ?? ["es"],
     provider: {
-      name: "openai",
-      model: "gpt-4o-mini",
+      name: (provider ?? "auto") as TransiaConfig["provider"]["name"],
     },
     include,
     exclude: [
@@ -96,8 +110,14 @@ export function createDefaultConfig(
       "**/node_modules/**",
     ],
     output: {
-      format: "next-intl",
+      format: outputFormat ?? "next-intl",
       path: "locales",
     },
   };
+
+  if (providerPriority && providerPriority.length > 0) {
+    config.providerPriority = providerPriority as TransiaConfig["providerPriority"];
+  }
+
+  return config;
 }
