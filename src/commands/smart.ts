@@ -166,77 +166,47 @@ export async function smartCommand(
     // Silent attempt — don't block the flow
   }
 
-  // State 4: No translations yet
+  // State 4: No translations yet — auto-run
   if (!state.hasTranslations) {
     console.log(
       chalk.green("  Project initialized ") +
-        chalk.dim("— no translations yet."),
+        chalk.dim("— translating strings..."),
     );
     console.log("");
-    const proceed = await confirm({
-      message: "Would you like to run your first translation?",
-      default: true,
-    });
-    if (!proceed) return;
     await translateCommand(projectRoot, {});
-
-    // After translation, auto-proceed to setup + widget
     return smartCommand(projectRoot, depth + 1);
   }
 
-  // State 5: Translations exist but incomplete
+  // State 5: Translations exist but incomplete — auto-run
   if (state.translationsCoverage < 100) {
     console.log(
       chalk.yellow(
-        `  Translations are ${state.translationsCoverage}% complete.`,
+        `  Translations are ${state.translationsCoverage}% complete — translating missing strings...`,
       ),
     );
     console.log("");
-    const proceed = await confirm({
-      message: "Would you like to translate the missing strings?",
-      default: true,
-    });
-    if (proceed) {
-      await translateCommand(projectRoot, {});
-      return smartCommand(projectRoot, depth + 1);
-    }
+    await translateCommand(projectRoot, {});
+    return smartCommand(projectRoot, depth + 1);
   }
 
-  // State 6: No i18n setup yet
+  // State 6: No i18n setup yet — auto-run
   if (!state.hasI18nSetup && state.hasTranslations) {
     console.log(
-      chalk.dim(
-        `  Translations ready — i18n library not configured yet.`,
-      ),
+      chalk.dim("  Configuring your project to use translations..."),
     );
     console.log("");
-    const proceed = await confirm({
-      message: `Set up ${state.config?.output.format ?? "i18n"} in your project?`,
-      default: true,
-    });
-    if (proceed) {
-      await setupCommand(projectRoot, {});
-      return smartCommand(projectRoot, depth + 1);
-    }
+    await setupCommand(projectRoot, {});
+    return smartCommand(projectRoot, depth + 1);
   }
 
-  // State 7: No widget yet
+  // State 7: No widget yet — auto-run
   if (!state.hasWidget && state.hasTranslations) {
     console.log(
-      chalk.dim(
-        "  Add the Transia language switcher widget to your app?",
-      ),
+      chalk.dim("  Adding the Transia language switcher widget..."),
     );
     console.log("");
-    const proceed = await confirm({
-      message:
-        "Add the floating language switcher widget? (appears at bottom-right)",
-      default: true,
-    });
-    if (proceed) {
-      await widgetCommand(projectRoot, {});
-      return;
-    }
+    await widgetCommand(projectRoot, {});
+    return smartCommand(projectRoot, depth + 1);
   }
 
   // State 8: Everything is set up!
