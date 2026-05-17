@@ -98,8 +98,8 @@ function generateNextIntlWidget(
     : "";
   return `"use client";
 
-import { TransiaWidget } from "@transia/widget";
-import { createNextIntlProps } from "@transia/widget/next-intl";
+import { TransiaWidget } from "transia-widget";
+import { createNextIntlProps } from "transia-widget/next-intl";
 import { useLocale } from "next-intl";
 import { useRouter, usePathname } from "@/i18n/routing";
 
@@ -133,8 +133,8 @@ function generateI18nextWidget(
   const projectIdProp = publicKey
     ? ` projectId="${publicKey}"`
     : "";
-  return `import { TransiaWidget } from "@transia/widget";
-import { createI18nextProps } from "@transia/widget/i18next";
+  return `import { TransiaWidget } from "transia-widget";
+import { createI18nextProps } from "transia-widget/i18next";
 import { useTranslation } from "react-i18next";
 
 export function TransiaLanguageSwitcher() {
@@ -312,21 +312,21 @@ export async function widgetCommand(
   );
   console.log("");
 
-  // 1. Install @transia/widget
-  if (!isInstalled(projectRoot, "@transia/widget")) {
-    const spinner = ora("Installing @transia/widget...").start();
+  // 1. Install transia-widget
+  if (!isInstalled(projectRoot, "transia-widget")) {
+    const spinner = ora("Installing transia-widget...").start();
     try {
-      runInstall(pm, ["@transia/widget"], projectRoot, !!options.verbose);
-      spinner.succeed("Installed @transia/widget");
+      runInstall(pm, ["transia-widget"], projectRoot, !!options.verbose);
+      spinner.succeed("Installed transia-widget");
     } catch (error) {
-      spinner.fail("Failed to install @transia/widget");
+      spinner.fail("Failed to install transia-widget");
       throw new TransiaError(
         ExitCode.GENERAL_ERROR,
-        `Failed to install @transia/widget: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to install transia-widget: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   } else {
-    logger.info("@transia/widget already installed, skipping.");
+    logger.info("transia-widget already installed, skipping.");
   }
 
   // 2. Generate the wrapper component

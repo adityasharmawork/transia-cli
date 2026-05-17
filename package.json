@@ -33,13 +33,13 @@
     "gemini",
     "byok"
   ],
-  "author": "",
+  "author": "Transia",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": ""
   },
-  "homepage": "",
+  "homepage": "https://transia.dev/docs",
   "engines": {
     "node": ">=20.0.0"
   },
