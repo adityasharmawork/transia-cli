@@ -7,6 +7,7 @@ import { saveConfig, loadConfig } from "../state/manager.js";
 import { createDefaultConfig } from "../state/schema.js";
 import { createProject } from "../api/client.js";
 import { logger } from "../utils/logger.js";
+import { shouldPromptInteractively } from "../utils/tty.js";
 
 interface InitOptions {
   yes?: boolean;
@@ -154,7 +155,7 @@ export async function initCommand(
   console.log("");
 
   // Interactive prompts (skip in non-interactive mode)
-  const isInteractive = options.yes !== true && process.stdin.isTTY !== false;
+  const isInteractive = shouldPromptInteractively(options.yes, process.stdin.isTTY);
 
   let userChoices: {
     outputFormat: "next-intl" | "i18next";
