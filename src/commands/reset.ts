@@ -3,6 +3,8 @@ import { resolve } from "node:path";
 import chalk from "chalk";
 import { loadConfig } from "../state/manager.js";
 import { logger } from "../utils/logger.js";
+import { isInsideProject } from "../utils/paths.js";
+import { TransiaError, ExitCode } from "../utils/errors.js";
 
 interface ResetOptions {
   confirm?: boolean;
@@ -51,15 +53,26 @@ export async function resetCommand(
 
   // Optionally delete output files
   if (options.output) {
+    let outputPath: string | null = null;
     try {
-      const config = loadConfig(projectRoot);
-      const outputDir = resolve(projectRoot, config.output.path);
+      outputPath = loadConfig(projectRoot).output.path;
+    } catch {
+      // Config might not exist — nothing to delete.
+    }
+    if (outputPath !== null) {
+      // Safety: never delete the project root itself or anything outside it,
+      // even if output.path is misconfigured as "." or "../something".
+      if (!isInsideProject(projectRoot, outputPath)) {
+        throw new TransiaError(
+          ExitCode.CONFIG_ERROR,
+          `Refusing to delete output path "${outputPath}": it must be a directory inside the project, not the project root (".") or a path outside it.`,
+        );
+      }
+      const outputDir = resolve(projectRoot, outputPath);
       if (existsSync(outputDir)) {
         rmSync(outputDir, { recursive: true });
-        logger.info(`Deleted output directory: ${config.output.path}/`);
+        logger.info(`Deleted output directory: ${outputPath}/`);
       }
-    } catch {
-      // Config might not exist
     }
   }
 

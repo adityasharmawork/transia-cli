@@ -19,6 +19,7 @@ import { generateOutputFiles } from "../output/formats.js";
 import { writeOutputFiles } from "../output/writer.js";
 import { validateTranslation } from "../output/validator.js";
 import { loadApiKey, clearKeys } from "../utils/keys.js";
+import { loadProjectEnv } from "../utils/env.js";
 import { logUsage } from "../api/client.js";
 import { logger } from "../utils/logger.js";
 import { TransiaError, ExitCode } from "../utils/errors.js";
@@ -53,6 +54,10 @@ export async function translateCommand(
   let apiKey = "";
   if (!options.dryRun && providerName !== "managed") {
     apiKey = loadApiKey(projectRoot, providerName, config.provider.apiKeyEnv, config.providerPriority);
+  } else if (!options.dryRun && providerName === "managed") {
+    // Managed mode reads TRANSIA_PROJECT_API_KEY from the environment, so the
+    // project's .env.local/.env (where `init` writes that key) must be loaded.
+    loadProjectEnv(projectRoot);
   }
 
   let provider: AIProvider | null = null;

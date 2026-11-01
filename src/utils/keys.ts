@@ -1,9 +1,7 @@
-import { config } from "dotenv";
-import { resolve } from "node:path";
-import { existsSync } from "node:fs";
 import { inspect } from "node:util";
 import { TransiaError, ExitCode } from "./errors.js";
 import { logger } from "./logger.js";
+import { loadProjectEnv } from "./env.js";
 
 const DEFAULT_ENV_VARS: Record<string, string> = {
   openai: "OPENAI_API_KEY",
@@ -67,16 +65,8 @@ export function loadApiKey(
   customEnvVar?: string,
   priority?: string[],
 ): string {
-  // Load .env files into process.env
-  const envLocalPath = resolve(projectRoot, ".env.local");
-  const envPath = resolve(projectRoot, ".env");
-
-  if (existsSync(envLocalPath)) {
-    config({ path: envLocalPath });
-  }
-  if (existsSync(envPath)) {
-    config({ path: envPath });
-  }
+  // Load .env.local then .env into process.env (shared with managed mode).
+  loadProjectEnv(projectRoot);
 
   // Handle "auto" provider: detect which API key is available
   if (provider === "auto" && !customEnvVar) {
