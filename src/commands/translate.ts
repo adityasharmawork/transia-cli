@@ -211,6 +211,7 @@ export async function translateCommand(
     let totalTranslated = 0;
     let totalTokens = 0;
     let failedBatches = 0;
+    let validationFailures = 0;
 
     const limit = pLimit(3);
 
@@ -255,6 +256,13 @@ export async function translateCommand(
                     p.name,
                   );
                   totalTranslated++;
+                } else {
+                  // Surface the failure instead of silently dropping it; the
+                  // string stays untranslated and is retried on the next run.
+                  validationFailures++;
+                  logger.warn(
+                    `Rejected ${locale} translation for ${str.source} — ${validation.errors.join("; ")}`,
+                  );
                 }
               }
             }
@@ -326,6 +334,13 @@ export async function translateCommand(
       console.log(
         chalk.yellow(
           `  ${failedBatches} batch(es) failed. Run again to retry.`,
+        ),
+      );
+    }
+    if (validationFailures > 0) {
+      console.log(
+        chalk.yellow(
+          `  ${validationFailures} translation(s) rejected by validation (placeholder/brace issues) and left untranslated. Run again to retry.`,
         ),
       );
     }
