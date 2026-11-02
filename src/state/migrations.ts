@@ -4,11 +4,16 @@ import { logger } from "../utils/logger.js";
 
 type MigrationFn = (state: Record<string, unknown>) => Record<string, unknown>;
 
-const CURRENT_VERSION = 1;
+const CURRENT_VERSION = 2;
 
 const MIGRATIONS: Record<number, MigrationFn> = {
-  // Future migrations go here:
-  // 2: (state) => { /* v1 -> v2 migration */ state.version = 2; return state; },
+  // v1 -> v2: the committed locale files become the source of truth; state is
+  // demoted to a provenance/cache role. The on-disk `strings` shape is
+  // unchanged (translations are retained as a non-authoritative cache), so
+  // this migration only stamps the new version. The behavioral change — read
+  // existing catalogs and merge rather than regenerate — lives in the write
+  // path (output/reader + output/merge), not in a destructive schema rewrite.
+  2: (state) => ({ ...state, version: 2 }),
 };
 
 export function migrateState(raw: Record<string, unknown>): TransiaState {

@@ -34,6 +34,13 @@ export const TransiaConfigSchema = z.object({
   output: OutputConfigSchema,
   projectId: z.string().optional(),
   publicKey: z.string().optional(),
+  apply: z
+    .object({
+      // Extra attribute names to exclude from translation, on top of the
+      // built-in deny-list. Empowers a cautious team under the max-coverage policy.
+      excludeAttributes: z.array(z.string()).default([]),
+    })
+    .optional(),
 });
 
 export type TransiaConfig = z.infer<typeof TransiaConfigSchema>;

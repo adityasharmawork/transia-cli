@@ -1,648 +1,176 @@
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { resolve, relative } from "node:path";
 import { execFileSync } from "node:child_process";
 import { glob } from "glob";
 import ora from "ora";
 import chalk from "chalk";
-import { parse } from "@babel/parser";
-import { createRequire } from "node:module";
 import { loadConfig, loadState } from "../state/manager.js";
-import { hashString, generateKey } from "../utils/crypto.js";
-import { sanitizeForPrompt } from "../parser/sanitizer.js";
-import { isTranslatableAttribute, isTranslatableString } from "../parser/filters.js";
+import { generateKey } from "../utils/crypto.js";
+import { recordCandidates, type Candidate } from "../parser/candidates.js";
+import { isLikelyUserFacing } from "../parser/classify.js";
+import { planHooks, planImports, type HookFormat } from "../transform/hooks.js";
+import { buildEdit, safeWriteFile, undoLatest, unifiedDiff } from "../transform/safe-write.js";
 import { logger } from "../utils/logger.js";
 import { TransiaError, ExitCode } from "../utils/errors.js";
-
-const require = createRequire(import.meta.url);
-const traverse =
-  require("@babel/traverse").default ?? require("@babel/traverse");
 
 interface ApplyOptions {
   dryRun?: boolean;
   verbose?: boolean;
+  undo?: boolean;
+  typecheck?: boolean; // commander --no-typecheck sets this false; default true
 }
 
-interface Replacement {
-  start: number;
-  end: number;
-  original: string;
-  replacement: string;
-  type: "jsx-text" | "jsx-attr" | "string-literal" | "template-literal";
+export interface TransformOptions {
+  knownHashes: Set<string>;
+  format: HookFormat;
+  excludeAttributes?: string[];
 }
 
-// generateKey is imported from ../utils/crypto.js (single source of truth shared with formats.ts)
+export interface TransformResult {
+  output: string;
+  wrapped: number;
+  skippedComponents: string[];
+}
 
-/**
- * Build a lookup map: sanitized original text -> translation key
- */
-function buildOriginalToKeyMap(
-  state: import("../state/schema.js").TransiaState,
-): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const [hash, entry] of Object.entries(state.strings)) {
-    const key = generateKey(entry.original, hash);
-    map.set(entry.original, key);
+/** Build the replacement text for a single recorded site. */
+function buildReplacement(c: Candidate, tName: string, source: string): string {
+  const key = generateKey(c.sanitized, c.hash);
+
+  if (c.role === "template") {
+    const parts = (c.interpolations ?? []).map(
+      (i) => `${i.name}: ${source.slice(i.exprStart, i.exprEnd)}`,
+    );
+    return parts.length > 0
+      ? `${tName}("${key}", { ${parts.join(", ")} })`
+      : `${tName}("${key}")`;
   }
-  return map;
-}
 
-/**
- * Determine the t() function name and import based on output format.
- */
-function getI18nImport(format: "next-intl" | "i18next"): {
-  hookImport: string;
-  hookCall: string;
-  tFunction: string;
-} {
-  if (format === "next-intl") {
-    return {
-      hookImport: 'import { useTranslations } from "next-intl";',
-      hookCall: "const t = useTranslations();",
-      tFunction: "t",
-    };
-  }
-  return {
-    hookImport: 'import { useTranslation } from "react-i18next";',
-    hookCall: "const { t } = useTranslation();",
-    tFunction: "t",
-  };
+  const call = `${tName}("${key}")`;
+  // jsx-text and a bare attribute (attr="literal") need a container; an
+  // attribute that already used {...} must not get doubled braces.
+  if (c.role === "jsx-text") return `{${call}}`;
+  if (c.role === "jsx-attr") return c.attrExpressionContainer ? call : `{${call}}`;
+  return call;
 }
 
 /**
- * Check if a node is inside a JSX tree (mirrors extractor.ts logic).
+ * The pure core of `apply`: given a file's source and the set of hashes known
+ * to be translated, return the transformed source. Replaces ONLY recorded,
+ * user-facing, already-translated sites (by exact byte range), inserts a
+ * scope-correct hook per component, and leaves everything else byte-for-byte
+ * unchanged. Returns the input unchanged when there is nothing safe to do.
  */
-function isInsideJSX(path: any): boolean {
-  let current = path;
-  while (current) {
-    const type = current.node?.type;
-    if (
-      type === "JSXElement" ||
-      type === "JSXFragment" ||
-      type === "JSXAttribute" ||
-      type === "JSXExpressionContainer"
-    ) {
-      return true;
-    }
-    current = current.parentPath;
-  }
-  return false;
-}
-
-function isInsideImport(path: any): boolean {
-  let current = path;
-  while (current) {
-    if (current.node?.type === "ImportDeclaration") return true;
-    current = current.parentPath;
-  }
-  return false;
-}
-
-function isInsideSkippableCall(path: any): boolean {
-  let current = path.parentPath;
-  while (current) {
-    if (current.node?.type === "CallExpression") {
-      const callee = current.node.callee;
-      if (
-        callee.type === "MemberExpression" &&
-        callee.object?.type === "Identifier" &&
-        callee.object.name === "console"
-      ) {
-        return true;
-      }
-      if (callee.type === "Identifier") {
-        if (["require"].includes(callee.name)) return true;
-      }
-      if (callee.type === "Import") return true;
-      if (
-        callee.type === "Identifier" &&
-        [
-          "test",
-          "describe",
-          "it",
-          "expect",
-          "beforeEach",
-          "afterEach",
-          "beforeAll",
-          "afterAll",
-        ].includes(callee.name)
-      ) {
-        return true;
-      }
-    }
-    if (current.node?.type === "TaggedTemplateExpression") {
-      const tag = current.node.tag;
-      if (
-        tag.type === "MemberExpression" &&
-        tag.object?.type === "Identifier" &&
-        tag.object.name === "styled"
-      ) {
-        return true;
-      }
-      if (
-        tag.type === "Identifier" &&
-        ["css", "keyframes", "createGlobalStyle", "injectGlobal"].includes(
-          tag.name,
-        )
-      ) {
-        return true;
-      }
-    }
-    current = current.parentPath;
-  }
-  return false;
-}
-
-function isSkippedAttribute(path: any): boolean {
-  const parent = path.parentPath;
-  if (!parent) return false;
-  if (parent.node?.type === "JSXAttribute") {
-    const attrName = parent.node.name?.name;
-    if (typeof attrName === "string" && !isTranslatableAttribute(attrName)) {
-      return true;
-    }
-  }
-  const grandparent = parent.parentPath;
-  if (
-    parent.node?.type === "JSXExpressionContainer" &&
-    grandparent?.node?.type === "JSXAttribute"
-  ) {
-    const attrName = grandparent.node.name?.name;
-    if (typeof attrName === "string" && !isTranslatableAttribute(attrName)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Check if a file already has the i18n hook imported.
- */
-function hasI18nImport(source: string, format: "next-intl" | "i18next"): boolean {
-  if (format === "next-intl") {
-    return source.includes("useTranslations");
-  }
-  return source.includes("useTranslation");
-}
-
-/**
- * Check if a file already has the t hook call.
- */
-function hasHookCall(source: string, format: "next-intl" | "i18next"): boolean {
-  if (format === "next-intl") {
-    return /const\s+t\s*=\s*useTranslations\s*\(/.test(source);
-  }
-  return /const\s*\{\s*t\s*\}\s*=\s*useTranslation\s*\(/.test(source);
-}
-
-/**
- * Find the position to inject the hook import (after the last import statement).
- */
-function findImportInsertPosition(ast: any): number {
-  let lastImportEnd = 0;
-  for (const node of ast.program.body) {
-    if (node.type === "ImportDeclaration") {
-      lastImportEnd = node.end;
-    }
-  }
-  return lastImportEnd;
-}
-
-/**
- * Find the first line inside a React component function body
- * to insert the hook call.
- */
-function findHookInsertPosition(ast: any, source: string): number | null {
-  let bestPosition: number | null = null;
-
-  traverse(ast, {
-    // Look for function components that return JSX
-    FunctionDeclaration(path: any) {
-      if (containsJSXReturn(path) && bestPosition === null) {
-        const pos = findBodyStart(path, source);
-        if (pos !== null) bestPosition = pos;
-      }
-    },
-    ArrowFunctionExpression(path: any) {
-      if (containsJSXReturn(path) && bestPosition === null) {
-        // Only top-level or exported arrow functions
-        const parentType = path.parent?.type;
-        if (
-          parentType === "VariableDeclarator" ||
-          parentType === "ExportDefaultDeclaration"
-        ) {
-          const pos = findBodyStart(path, source);
-          if (pos !== null) bestPosition = pos;
-        }
-      }
-    },
-    FunctionExpression(path: any) {
-      if (containsJSXReturn(path) && bestPosition === null) {
-        const parentType = path.parent?.type;
-        if (parentType === "VariableDeclarator") {
-          const pos = findBodyStart(path, source);
-          if (pos !== null) bestPosition = pos;
-        }
-      }
-    },
-  });
-
-  return bestPosition;
-}
-
-function containsJSXReturn(path: any): boolean {
-  let found = false;
-  path.traverse({
-    ReturnStatement(retPath: any) {
-      const arg = retPath.node.argument;
-      if (
-        arg &&
-        (arg.type === "JSXElement" ||
-          arg.type === "JSXFragment" ||
-          arg.type === "ParenthesizedExpression")
-      ) {
-        found = true;
-      }
-    },
-    JSXElement() {
-      found = true;
-    },
-    JSXFragment() {
-      found = true;
-    },
-  });
-  return found;
-}
-
-function findBodyStart(path: any, source: string): number | null {
-  const body = path.node.body;
-  if (body.type === "BlockStatement") {
-    // Insert after the opening brace
-    const openBrace = body.start;
-    // Find the newline after the opening brace
-    const afterBrace = source.indexOf("\n", openBrace);
-    return afterBrace !== -1 ? afterBrace + 1 : openBrace + 1;
-  }
-  // Arrow function with expression body (e.g., `const App = () => <div>...</div>`)
-  // Cannot safely inject a hook statement here — skip this component
-  return null;
-}
-
-/**
- * Process a single file: find translatable strings and create replacements.
- */
-function processFile(
+export function transformSource(
   source: string,
   filePath: string,
-  keyMap: Map<string, string>,
-): Replacement[] {
-  const replacements: Replacement[] = [];
+  opts: TransformOptions,
+): TransformResult {
+  const exclude = opts.excludeAttributes ?? [];
+  const candidates = recordCandidates(source, filePath);
 
-  let ast;
+  let keep = candidates.filter(
+    (c) => isLikelyUserFacing(c, exclude) && opts.knownHashes.has(c.hash),
+  );
+  if (keep.length === 0) {
+    return { output: source, wrapped: 0, skippedComponents: [] };
+  }
+
+  const componentPaths = [
+    ...new Set(keep.map((c) => c.componentPath).filter((p) => p !== "")),
+  ];
+  const hookPlan = planHooks(source, componentPaths, opts.format);
+
+  // Drop sites whose component could not be safely wired with a hook.
+  keep = keep.filter(
+    (c) => c.componentPath !== "" && !hookPlan.skippedComponents.has(c.componentPath),
+  );
+  const skipped = [...hookPlan.skippedComponents.keys()];
+  if (keep.length === 0) {
+    return { output: source, wrapped: 0, skippedComponents: skipped };
+  }
+
+  const edits = keep.map((c) => ({
+    start: c.start,
+    end: c.end,
+    replacement: buildReplacement(
+      c,
+      hookPlan.tNameByComponent.get(c.componentPath) ?? "t",
+      source,
+    ),
+  }));
+
+  const insertions = [
+    ...hookPlan.insertions,
+    ...planImports(source, hookPlan.importSpecs),
+  ];
+
+  const output = buildEdit(source, edits, insertions);
+  return { output, wrapped: keep.length, skippedComponents: skipped };
+}
+
+function runTypecheck(projectRoot: string): boolean {
+  if (!existsSync(resolve(projectRoot, "tsconfig.json"))) return true; // nothing to check
   try {
-    ast = parse(source, {
-      sourceType: "module",
-      plugins: ["jsx", "typescript", "decorators-legacy"],
-      errorRecovery: true,
+    execFileSync("npx", ["tsc", "--noEmit"], {
+      cwd: projectRoot,
+      stdio: ["pipe", "pipe", "pipe"],
     });
+    return true;
   } catch {
-    logger.warn(`Failed to parse ${filePath}, skipping.`);
-    return [];
+    return false;
   }
-
-  traverse(ast, {
-    // Direct JSX text: <p>Hello World</p>
-    JSXText(path: any) {
-      const rawValue = path.node.value;
-      const trimmed = rawValue.trim();
-      if (!trimmed || !isTranslatableString(trimmed)) return;
-
-      const { sanitized } = sanitizeForPrompt(trimmed, `${filePath}`);
-      const key = keyMap.get(sanitized);
-      if (!key) return;
-
-      replacements.push({
-        start: path.node.start,
-        end: path.node.end,
-        original: rawValue,
-        replacement: `{t("${key}")}`,
-        type: "jsx-text",
-      });
-    },
-
-    // String literals in JSX context
-    StringLiteral(path: any) {
-      if (isInsideImport(path)) return;
-      if (isInsideSkippableCall(path)) return;
-      if (isSkippedAttribute(path)) return;
-
-      const parent = path.parentPath;
-      if (!parent) return;
-      const parentType = parent.node?.type;
-
-      // JSXAttribute: <input placeholder="Enter name" />
-      if (parentType === "JSXAttribute") {
-        const attrName = parent.node.name?.name;
-        if (
-          typeof attrName === "string" &&
-          isTranslatableAttribute(attrName)
-        ) {
-          const { sanitized } = sanitizeForPrompt(
-            path.node.value,
-            filePath,
-          );
-          const key = keyMap.get(sanitized);
-          if (!key) return;
-
-          // Replace "Enter name" with {t("key")}
-          replacements.push({
-            start: path.node.start,
-            end: path.node.end,
-            original: path.node.value,
-            replacement: `{t("${key}")}`,
-            type: "jsx-attr",
-          });
-          return;
-        }
-      }
-
-      // JSXExpressionContainer: <p>{"Hello"}</p>
-      if (parentType === "JSXExpressionContainer") {
-        const { sanitized } = sanitizeForPrompt(
-          path.node.value,
-          filePath,
-        );
-        const key = keyMap.get(sanitized);
-        if (!key) return;
-
-        replacements.push({
-          start: path.node.start,
-          end: path.node.end,
-          original: path.node.value,
-          replacement: `t("${key}")`,
-          type: "string-literal",
-        });
-        return;
-      }
-
-      // ConditionalExpression inside JSX: {cond ? "Yes" : "No"}
-      if (parentType === "ConditionalExpression" && isInsideJSX(parent)) {
-        const { sanitized } = sanitizeForPrompt(
-          path.node.value,
-          filePath,
-        );
-        const key = keyMap.get(sanitized);
-        if (!key) return;
-
-        replacements.push({
-          start: path.node.start,
-          end: path.node.end,
-          original: path.node.value,
-          replacement: `t("${key}")`,
-          type: "string-literal",
-        });
-        return;
-      }
-
-      // Array expressions inside JSX
-      if (parentType === "ArrayExpression" && isInsideJSX(parent)) {
-        const { sanitized } = sanitizeForPrompt(
-          path.node.value,
-          filePath,
-        );
-        const key = keyMap.get(sanitized);
-        if (!key) return;
-
-        replacements.push({
-          start: path.node.start,
-          end: path.node.end,
-          original: path.node.value,
-          replacement: `t("${key}")`,
-          type: "string-literal",
-        });
-        return;
-      }
-
-      // General string inside JSXExpressionContainer
-      if (isInsideJSX(path) && parentType !== "ObjectProperty") {
-        const inExpContainer = path.findParent(
-          (p: any) => p.node?.type === "JSXExpressionContainer",
-        );
-        if (inExpContainer) {
-          const { sanitized } = sanitizeForPrompt(
-            path.node.value,
-            filePath,
-          );
-          const key = keyMap.get(sanitized);
-          if (!key) return;
-
-          replacements.push({
-            start: path.node.start,
-            end: path.node.end,
-            original: path.node.value,
-            replacement: `t("${key}")`,
-            type: "string-literal",
-          });
-        }
-      }
-    },
-
-    // Template literals inside JSX: <p>{`Welcome ${name}`}</p>
-    TemplateLiteral(path: any) {
-      if (isInsideSkippableCall(path)) return;
-      if (path.parent?.type === "TaggedTemplateExpression") return;
-      if (!isInsideJSX(path)) return;
-
-      const quasis = path.node.quasis;
-      const expressions = path.node.expressions;
-
-      // Build the same representation as the extractor
-      let fullText = "";
-      for (let i = 0; i < quasis.length; i++) {
-        fullText += quasis[i].value.cooked ?? quasis[i].value.raw;
-        if (i < expressions.length) {
-          const expr = expressions[i];
-          const name =
-            expr.type === "Identifier"
-              ? expr.name
-              : expr.type === "MemberExpression" &&
-                  expr.property?.type === "Identifier"
-                ? expr.property.name
-                : `expr${i}`;
-          fullText += `{${name}}`;
-        }
-      }
-
-      const { sanitized } = sanitizeForPrompt(fullText, filePath);
-      const key = keyMap.get(sanitized);
-      if (!key) return;
-
-      // Build the t() call with interpolation params
-      const params: string[] = [];
-      for (let i = 0; i < expressions.length; i++) {
-        const expr = expressions[i];
-        const exprSource = source.slice(expr.start, expr.end);
-        const name =
-          expr.type === "Identifier"
-            ? expr.name
-            : expr.type === "MemberExpression" &&
-                expr.property?.type === "Identifier"
-              ? expr.property.name
-              : `expr${i}`;
-        params.push(`${name}: ${exprSource}`);
-      }
-
-      const tCall =
-        params.length > 0
-          ? `t("${key}", { ${params.join(", ")} })`
-          : `t("${key}")`;
-
-      replacements.push({
-        start: path.node.start,
-        end: path.node.end,
-        original: fullText,
-        replacement: tCall,
-        type: "template-literal",
-      });
-    },
-  });
-
-  return replacements;
-}
-
-/**
- * Apply replacements to source, working from end to start to preserve positions.
- */
-function applyReplacements(source: string, replacements: Replacement[]): string {
-  // Sort by start position descending so we don't shift indices
-  const sorted = [...replacements].sort((a, b) => b.start - a.start);
-
-  let result = source;
-  for (const rep of sorted) {
-    result = result.slice(0, rep.start) + rep.replacement + result.slice(rep.end);
-  }
-  return result;
-}
-
-/**
- * Add the i18n import and hook call to a file if not already present.
- */
-function addI18nBoilerplate(
-  source: string,
-  format: "next-intl" | "i18next",
-): string {
-  let result = source;
-  const i18n = getI18nImport(format);
-
-  // Add import if missing
-  if (!hasI18nImport(result, format)) {
-    let ast;
-    try {
-      ast = parse(result, {
-        sourceType: "module",
-        plugins: ["jsx", "typescript", "decorators-legacy"],
-        errorRecovery: true,
-      });
-    } catch {
-      return result;
-    }
-
-    const importPos = findImportInsertPosition(ast);
-    if (importPos > 0) {
-      result =
-        result.slice(0, importPos) +
-        "\n" +
-        i18n.hookImport +
-        result.slice(importPos);
-    } else {
-      result = i18n.hookImport + "\n" + result;
-    }
-  }
-
-  // Add hook call if missing
-  if (!hasHookCall(result, format)) {
-    let ast;
-    try {
-      ast = parse(result, {
-        sourceType: "module",
-        plugins: ["jsx", "typescript", "decorators-legacy"],
-        errorRecovery: true,
-      });
-    } catch {
-      return result;
-    }
-
-    const hookPos = findHookInsertPosition(ast, result);
-    if (hookPos !== null) {
-      // Detect indentation at insert position
-      const lineStart = result.lastIndexOf("\n", hookPos - 1) + 1;
-      const nextLineStart = hookPos;
-      const nextLine = result.slice(
-        nextLineStart,
-        result.indexOf("\n", nextLineStart),
-      );
-      const indent = nextLine.match(/^(\s*)/)?.[1] ?? "  ";
-
-      result =
-        result.slice(0, hookPos) +
-        indent +
-        i18n.hookCall +
-        "\n" +
-        result.slice(hookPos);
-    }
-  }
-
-  return result;
 }
 
 export async function applyCommand(
   projectRoot: string,
   options: ApplyOptions,
 ): Promise<void> {
-  if (options.verbose) {
-    logger.setLevel("debug");
+  if (options.verbose) logger.setLevel("debug");
+
+  if (options.undo) {
+    const n = undoLatest(projectRoot);
+    logger.info(
+      n > 0
+        ? `Restored ${n} file(s) from the most recent backup.`
+        : "No backup found to undo.",
+    );
+    return;
   }
 
-  // Safety check: warn if there are uncommitted changes (skip in dry-run)
+  // Safety: warn on uncommitted changes (advisory; the real net is backup + validate).
   if (!options.dryRun && existsSync(resolve(projectRoot, ".git"))) {
     try {
       const status = execFileSync("git", ["status", "--porcelain"], {
         cwd: projectRoot,
         stdio: ["pipe", "pipe", "pipe"],
-      }).toString().trim();
+      })
+        .toString()
+        .trim();
       if (status.length > 0) {
         logger.warn(
-          "You have uncommitted changes. It is recommended to commit or stash " +
-          "your changes before running 'transia apply', so you can easily " +
-          "revert with 'git checkout .' if needed."
+          "You have uncommitted changes. 'transia apply' backs up every file it " +
+            "rewrites (restore with 'transia apply --undo'), but committing first is " +
+            "still recommended.",
         );
-        logger.warn("Proceeding in 3 seconds... (use --dry-run to preview changes first)");
-        await new Promise((r) => setTimeout(r, 3000));
       }
     } catch {
-      // Git not available or not a git repo — skip the check
+      // not a git repo / git unavailable — skip
     }
   }
 
-  // Load config and state
   const config = loadConfig(projectRoot);
   const state = loadState(projectRoot);
-
-  // Check if translations exist
-  const hasTranslations = Object.keys(state.strings).length > 0;
-  if (!hasTranslations) {
+  const knownHashes = new Set(Object.keys(state.strings));
+  if (knownHashes.size === 0) {
     throw new TransiaError(
       ExitCode.STATE_ERROR,
       'No translations found. Run "transia translate" first.',
     );
   }
+  const excludeAttributes = config.apply?.excludeAttributes ?? [];
+  const format = config.output.format as HookFormat;
 
-  // Build the original-text-to-key map
-  const keyMap = buildOriginalToKeyMap(state);
-  logger.debug(`Loaded ${keyMap.size} translation keys from state`);
-
-  // Discover source files
   const spinner = ora("Discovering source files...").start();
-
   const files: string[] = [];
   for (const pattern of config.include) {
     const matched = await glob(pattern, {
@@ -654,82 +182,127 @@ export async function applyCommand(
   }
   const uniqueFiles = [...new Set(files)];
   spinner.succeed(`Found ${uniqueFiles.length} source files`);
-
   if (uniqueFiles.length === 0) {
     logger.warn("No source files found.");
     return;
   }
 
-  // Process each file
-  const applySpinner = ora("Applying translations to source files...").start();
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupDir = resolve(projectRoot, ".transia-backup", timestamp);
 
-  let totalReplacements = 0;
-  let filesModified = 0;
-  const modifiedFiles: Array<{ file: string; count: number }> = [];
+  const applySpinner = ora("Applying translations to source files...").start();
+  const modified: Array<{ file: string; count: number }> = [];
+  const skippedFiles: string[] = [];
+  const diffs: string[] = [];
+  let totalWrapped = 0;
+  let skippedComponentCount = 0;
 
   for (const file of uniqueFiles) {
     const source = readFileSync(file, "utf-8");
-    const relativePath = relative(projectRoot, file);
+    const relPath = relative(projectRoot, file);
 
-    // Skip files that are already fully translated (contain t() calls but no raw strings)
-    const replacements = processFile(source, relativePath, keyMap);
+    let result: TransformResult;
+    try {
+      result = transformSource(source, relPath, { knownHashes, format, excludeAttributes });
+    } catch (error) {
+      skippedFiles.push(relPath);
+      logger.debug(
+        `Skipped ${relPath}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      continue;
+    }
 
-    if (replacements.length === 0) continue;
+    skippedComponentCount += result.skippedComponents.length;
 
-    // Apply string replacements
-    let modified = applyReplacements(source, replacements);
+    if (result.output === source) continue; // nothing to do / idempotent
 
-    // Add import and hook call
-    modified = addI18nBoilerplate(modified, config.output.format);
+    if (options.dryRun) {
+      diffs.push(unifiedDiff(relPath, source, result.output));
+      modified.push({ file: relPath, count: result.wrapped });
+      totalWrapped += result.wrapped;
+      continue;
+    }
 
-    if (modified !== source) {
-      if (options.dryRun) {
-        modifiedFiles.push({ file: relativePath, count: replacements.length });
-      } else {
-        writeFileSync(file, modified, "utf-8");
-        modifiedFiles.push({ file: relativePath, count: replacements.length });
-      }
-      totalReplacements += replacements.length;
-      filesModified++;
+    const backupPath = resolve(backupDir, relPath);
+    const outcome = safeWriteFile(file, result.output, { backupPath });
+    if (outcome === "written") {
+      modified.push({ file: relPath, count: result.wrapped });
+      totalWrapped += result.wrapped;
+    } else {
+      skippedFiles.push(relPath);
+      logger.warn(`Skipped ${relPath}: the transform would not re-parse.`);
     }
   }
 
-  applySpinner.succeed(
-    `Processed ${uniqueFiles.length} files`,
-  );
+  applySpinner.succeed(`Processed ${uniqueFiles.length} files`);
+
+  // Typecheck gate (on by default; skipped in dry-run or with --no-typecheck).
+  if (!options.dryRun && options.typecheck !== false && modified.length > 0) {
+    const tcSpinner = ora("Type-checking changed files...").start();
+    if (runTypecheck(projectRoot)) {
+      tcSpinner.succeed("Type check passed");
+    } else {
+      tcSpinner.fail("Type check failed");
+      const restored = undoLatest(projectRoot);
+      throw new TransiaError(
+        ExitCode.PARSE_ERROR,
+        `Type check failed after apply; restored ${restored} file(s) from backup. ` +
+          `Re-run with --no-typecheck to skip this gate.`,
+      );
+    }
+  }
 
   // Summary
   console.log("");
   if (options.dryRun) {
     console.log(chalk.yellow.bold("  Dry run — no files were modified"));
     console.log("");
+    for (const d of diffs) console.log(d);
   }
 
-  if (filesModified === 0) {
+  if (modified.length === 0) {
     console.log(
       chalk.green(
-        "  All source files are already using t() calls. Nothing to apply.",
+        "  Nothing to apply — source files are already using t() calls (or no translated strings matched).",
       ),
     );
   } else {
     console.log(
       chalk.green.bold(
-        `  ${options.dryRun ? "Would apply" : "Applied"} ${totalReplacements} replacements across ${filesModified} files:`,
+        `  ${options.dryRun ? "Would apply" : "Applied"} ${totalWrapped} replacements across ${modified.length} files:`,
       ),
     );
     console.log("");
-    for (const { file, count } of modifiedFiles) {
+    for (const { file, count } of modified) {
       console.log(`    ${chalk.cyan(file)} — ${count} string(s)`);
     }
     console.log("");
-
     if (!options.dryRun) {
       console.log(
         chalk.dim(
-          "  Tip: Review the changes with `git diff` and test your app before committing.",
+          "  Originals backed up. Review with `git diff`; undo with `transia apply --undo`.",
         ),
       );
       console.log("");
     }
+  }
+
+  if (skippedFiles.length > 0) {
+    console.log(
+      chalk.yellow(
+        `  ${skippedFiles.length} file(s) skipped for safety (unsafe transform or unwireable hook).`,
+      ),
+    );
+    console.log("");
+  }
+
+  if (skippedComponentCount > 0) {
+    console.log(
+      chalk.yellow(
+        `  ${skippedComponentCount} component(s) left untouched (could not wire a hook safely — ` +
+          `e.g. a parenthesized arrow body). Their strings were not wrapped.`,
+      ),
+    );
+    console.log("");
   }
 }

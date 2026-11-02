@@ -1,6 +1,9 @@
 import { resolve } from "node:path";
-import type { TransiaState } from "../state/schema.js";
+import type { TransiaState, TransiaConfig } from "../state/schema.js";
 import { generateKey } from "../utils/crypto.js";
+import { readCatalogs } from "./reader.js";
+import { mergeCatalogs, type MergeOptions } from "./merge.js";
+import { writeOutputFiles } from "./writer.js";
 
 export type OutputFormat = "next-intl" | "i18next";
 
@@ -10,7 +13,50 @@ export interface OutputFile {
 }
 
 /**
- * Generate output translation files from state.
+ * Build the in-memory `locale -> (key -> value)` catalogs from state.
+ * This is the pre-serialization shape shared by file generation and merging.
+ */
+export function buildCatalogs(
+  state: TransiaState,
+  locales: string[],
+  sourceLocale: string,
+): Map<string, Record<string, string>> {
+  const byLocale = new Map<string, Record<string, string>>();
+  for (const locale of [sourceLocale, ...locales]) {
+    byLocale.set(locale, {});
+  }
+
+  for (const [hash, entry] of Object.entries(state.strings)) {
+    const key = generateKey(entry.original, hash);
+
+    byLocale.get(sourceLocale)![key] = entry.original;
+
+    for (const locale of locales) {
+      const translation = entry.translations[locale];
+      if (translation) {
+        byLocale.get(locale)![key] = translation.value;
+      }
+    }
+  }
+
+  return byLocale;
+}
+
+/** Serialize in-memory catalogs to on-disk files for the chosen format. */
+export function serializeCatalogs(
+  catalogs: Map<string, Record<string, string>>,
+  outputPath: string,
+  format: OutputFormat,
+): OutputFile[] {
+  return format === "next-intl"
+    ? generateNextIntlFiles(catalogs, outputPath)
+    : generateI18nextFiles(catalogs, outputPath);
+}
+
+/**
+ * Generate output translation files from state (regenerate from scratch).
+ * Retained for callers that want a pure projection of state; the write path
+ * now prefers writeMergedCatalogs so existing files and hand edits survive.
  */
 export function generateOutputFiles(
   state: TransiaState,
@@ -19,46 +65,36 @@ export function generateOutputFiles(
   locales: string[],
   sourceLocale: string,
 ): OutputFile[] {
-  const files: OutputFile[] = [];
+  return serializeCatalogs(
+    buildCatalogs(state, locales, sourceLocale),
+    outputPath,
+    format,
+  );
+}
 
-  // Build translation maps per locale
-  const translationsByLocale = new Map<string, Record<string, string>>();
+/**
+ * Write translations by MERGING freshly generated values into the existing
+ * on-disk catalogs, rather than regenerating from scratch. This is what makes
+ * a fresh clone, a partial failure, and a hand edit all non-destructive:
+ * committed locale files are the source of truth.
+ */
+export function writeMergedCatalogs(
+  projectRoot: string,
+  state: TransiaState,
+  config: TransiaConfig,
+  locales: string[],
+  opts: MergeOptions,
+): number {
+  const outputPath = resolve(projectRoot, config.output.path);
+  const allLocales = [config.sourceLocale, ...locales];
 
-  // Include source locale
-  const allLocales = [sourceLocale, ...locales];
-  for (const locale of allLocales) {
-    translationsByLocale.set(locale, {});
-  }
+  const existing = readCatalogs(outputPath, config.output.format, allLocales);
+  const generated = buildCatalogs(state, locales, config.sourceLocale);
+  const merged = mergeCatalogs(existing, generated, opts);
 
-  for (const [hash, entry] of Object.entries(state.strings)) {
-    // Generate a stable key from the original string, using hash suffix for uniqueness
-    const key = generateKey(entry.original, hash);
-
-    // Source locale gets the original
-    const sourceMap = translationsByLocale.get(sourceLocale)!;
-    sourceMap[key] = entry.original;
-
-    // Target locales get translations
-    for (const locale of locales) {
-      const localeMap = translationsByLocale.get(locale)!;
-      const translation = entry.translations[locale];
-      if (translation) {
-        localeMap[key] = translation.value;
-      }
-    }
-  }
-
-  if (format === "next-intl") {
-    files.push(
-      ...generateNextIntlFiles(translationsByLocale, outputPath),
-    );
-  } else {
-    files.push(
-      ...generateI18nextFiles(translationsByLocale, outputPath),
-    );
-  }
-
-  return files;
+  const files = serializeCatalogs(merged, outputPath, config.output.format);
+  writeOutputFiles(files);
+  return files.length;
 }
 
 /**
@@ -107,8 +143,6 @@ function generateI18nextFiles(
 
   return files;
 }
-
-// generateKey is imported from ../utils/crypto.js (single source of truth)
 
 /**
  * Convert flat dot-separated keys to nested object.
