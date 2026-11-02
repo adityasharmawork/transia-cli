@@ -167,7 +167,7 @@ export function planImports(source: string, specs: ImportSpec[]): HookInsertion[
   }
   for (const node of ast.program.body) {
     if (node.type === "ImportDeclaration") {
-      insertAfter = Math.max(insertAfter, node.end);
+      insertAfter = Math.max(insertAfter, node.end ?? 0);
       const mod = (node as any).source.value;
       for (const spec of (node as any).specifiers) {
         if (spec.type === "ImportSpecifier" && spec.imported?.name) {
