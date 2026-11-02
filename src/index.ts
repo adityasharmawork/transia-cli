@@ -152,7 +152,9 @@ program
   .description(
     "Rewrite source files to replace hardcoded strings with t() calls",
   )
-  .option("-d, --dry-run", "Show what would be changed without modifying files")
+  .option("-d, --dry-run", "Show a unified diff without modifying files")
+  .option("--undo", "Restore source files from the most recent apply backup")
+  .option("--no-typecheck", "Skip the tsc --noEmit gate before keeping changes")
   .option("-v, --verbose", "Enable debug logging")
   .action(async (options) => {
     try {
