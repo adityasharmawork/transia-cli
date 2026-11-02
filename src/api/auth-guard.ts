@@ -7,10 +7,11 @@ import { logger } from "../utils/logger.js";
 export async function requireAuth(): Promise<void> {
   const credentials = loadCredentials();
 
-  if (!credentials) {
+  // A CI token in the real environment counts as being logged in.
+  if (!credentials && !process.env.TRANSIA_TOKEN) {
     throw new TransiaError(
       ExitCode.AUTH_ERROR,
-      `Not logged in. Run ${chalk.cyan("transia login")} to authenticate.`,
+      `Not logged in. Run ${chalk.cyan("transia login")} (or set TRANSIA_TOKEN for CI) to authenticate.`,
     );
   }
 
