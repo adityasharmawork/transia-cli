@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { resolve, relative } from "node:path";
+import { relative } from "node:path";
 import { glob } from "glob";
 import ora from "ora";
 import chalk from "chalk";
@@ -15,8 +15,7 @@ import {
 import { extractStringsFromSource } from "../parser/extractor.js";
 import { createProvider } from "../ai/provider.js";
 import type { AIProvider, TranslationRequest } from "../ai/provider.js";
-import { generateOutputFiles } from "../output/formats.js";
-import { writeOutputFiles } from "../output/writer.js";
+import { writeMergedCatalogs } from "../output/formats.js";
 import { validateTranslation } from "../output/validator.js";
 import { loadApiKey, clearKeys } from "../utils/keys.js";
 import { loadProjectEnv } from "../utils/env.js";
@@ -28,6 +27,7 @@ interface TranslateOptions {
   target?: string;
   provider?: string;
   force?: boolean;
+  prune?: boolean;
   dryRun?: boolean;
   verbose?: boolean;
 }
@@ -147,18 +147,14 @@ export async function translateCommand(
       logger.info(
         chalk.green("All strings are already translated. Nothing to do."),
       );
-      // Still generate output files in case format changed
-      const outputFiles = generateOutputFiles(
-        state,
-        resolve(projectRoot, config.output.path),
-        config.output.format,
-        targetLocales,
-        config.sourceLocale,
-      );
-      writeOutputFiles(outputFiles);
+      // Merge current state into the existing catalogs (non-destructive).
+      const written = writeMergedCatalogs(projectRoot, state, config, targetLocales, {
+        force: !!options.force,
+        prune: !!options.prune,
+      });
       logger.info(
         chalk.green(
-          `Generated ${outputFiles.length} translation files in ${config.output.path}/`,
+          `Wrote ${written} translation files in ${config.output.path}/`,
         ),
       );
       return;
@@ -294,20 +290,16 @@ export async function translateCommand(
       );
     }
 
-    // Step 5: Generate output files
-    const outputSpinner = ora("Generating translation files...").start();
+    // Step 5: Write output files (merge into existing catalogs, non-destructive)
+    const outputSpinner = ora("Writing translation files...").start();
 
-    const outputFiles = generateOutputFiles(
-      state,
-      resolve(projectRoot, config.output.path),
-      config.output.format,
-      targetLocales,
-      config.sourceLocale,
-    );
-    writeOutputFiles(outputFiles);
+    const written = writeMergedCatalogs(projectRoot, state, config, targetLocales, {
+      force: !!options.force,
+      prune: !!options.prune,
+    });
 
     outputSpinner.succeed(
-      `Generated ${outputFiles.length} translation files in ${config.output.path}/`,
+      `Wrote ${written} translation files in ${config.output.path}/`,
     );
 
     // Summary

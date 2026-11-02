@@ -106,6 +106,10 @@ program
     "AI provider (openai, anthropic, gemini, grok)",
   )
   .option("-f, --force", "Re-translate all strings, ignoring cache")
+  .option(
+    "--prune",
+    "Remove keys from locale files that are no longer present in the source",
+  )
   .option("-d, --dry-run", "Show what would be translated without calling AI")
   .option("-v, --verbose", "Enable debug logging")
   .action(async (options) => {
