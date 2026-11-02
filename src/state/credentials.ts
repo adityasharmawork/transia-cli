@@ -110,7 +110,15 @@ export function loadCredentials(): Credentials | null {
       }
       const creds = JSON.parse(decrypted);
       if (creds.authToken && creds.email && creds.apiUrl) {
-        if (migrated) saveCredentials(creds as Credentials); // re-encrypt with the new key
+        if (migrated) {
+          // Re-encrypt with the new key — best-effort. A failed write (e.g.
+          // read-only HOME) must NOT discard a credential that just decrypted.
+          try {
+            saveCredentials(creds as Credentials);
+          } catch {
+            /* keep the valid credential; it will migrate on a later writable run */
+          }
+        }
         return creds as Credentials;
       }
       return null;
@@ -119,8 +127,12 @@ export function loadCredentials(): Credentials | null {
     // v1: legacy plaintext format — read and re-encrypt on next save
     if (data.authToken && data.email && data.apiUrl) {
       const creds = data as Credentials;
-      // Silently upgrade to encrypted format
-      saveCredentials(creds);
+      // Silently upgrade to encrypted format (best-effort; never lose the creds).
+      try {
+        saveCredentials(creds);
+      } catch {
+        /* keep the valid credential even if the re-encrypt write fails */
+      }
       return creds;
     }
 

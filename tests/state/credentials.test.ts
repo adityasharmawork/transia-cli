@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -41,5 +41,18 @@ describe("credentials — hostname-free key + legacy migration", () => {
     expect(loadCredentials()).toEqual(CREDS);
     // …so a second load succeeds too (now stored under the hostname-free key).
     expect(loadCredentials()).toEqual(CREDS);
+  });
+
+  it("keeps a valid credential even if the migration re-save write fails (no silent logout)", () => {
+    const dir = join(home, ".transia");
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, "credentials.json");
+    writeFileSync(file, JSON.stringify(encrypt(JSON.stringify(CREDS), legacyDeriveKey())));
+    chmodSync(file, 0o400); // read-only → the migration re-save throws
+    try {
+      expect(loadCredentials()).toEqual(CREDS);
+    } finally {
+      chmodSync(file, 0o600); // restore so afterEach cleanup can remove it
+    }
   });
 });
