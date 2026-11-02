@@ -36,8 +36,9 @@ export class AnthropicProvider implements AIProvider {
     );
 
     const result = await withRetry(
-      () =>
+      (signal) =>
         fetch(API_URL, {
+          signal,
           method: "POST",
           headers: {
             "Content-Type": "application/json",

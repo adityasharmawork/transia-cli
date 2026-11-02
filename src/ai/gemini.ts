@@ -41,8 +41,9 @@ export class GeminiProvider implements AIProvider {
     const url = getApiUrl(this.model);
 
     const result = await withRetry(
-      () =>
+      (signal) =>
         fetch(url, {
+          signal,
           method: "POST",
           headers: {
             "Content-Type": "application/json",

@@ -5,6 +5,8 @@ export interface RetryOptions {
   maxRetries?: number;
   baseDelayMs?: number;
   maxDelayMs?: number;
+  /** Per-attempt request timeout; a hung request is aborted after this. */
+  timeoutMs?: number;
 }
 
 function isAuthError(status: number): boolean {
@@ -13,6 +15,11 @@ function isAuthError(status: number): boolean {
 
 function isRateLimited(status: number): boolean {
   return status === 429;
+}
+
+/** 4xx other than 429 — a client error that retrying cannot fix. */
+function isNonRetryableClientError(status: number): boolean {
+  return status >= 400 && status < 500 && status !== 429;
 }
 
 function parseRetryAfter(headers: Headers): number | null {
@@ -33,17 +40,25 @@ function jitter(delayMs: number): number {
 }
 
 export async function withRetry<T>(
-  fn: () => Promise<Response>,
+  fn: (signal: AbortSignal) => Promise<Response>,
   parseResponse: (res: Response) => Promise<T>,
   options: RetryOptions = {},
 ): Promise<T> {
-  const { maxRetries = 3, baseDelayMs = 1000, maxDelayMs = 30000 } = options;
+  const {
+    maxRetries = 3,
+    baseDelayMs = 1000,
+    maxDelayMs = 30000,
+    timeoutMs = 30000,
+  } = options;
 
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
     try {
-      const response = await fn();
+      const response = await fn(controller.signal);
 
       if (response.ok) {
         return await parseResponse(response);
@@ -56,10 +71,24 @@ export async function withRetry<T>(
         );
       }
 
+      // Other 4xx are the caller's fault (bad request, not found, unprocessable);
+      // retrying wastes time and tokens. Fail fast.
+      if (isNonRetryableClientError(response.status)) {
+        const body = await response.text().catch(() => "");
+        throw new TransiaError(
+          ExitCode.NETWORK_ERROR,
+          `API request failed (HTTP ${response.status}) and will not be retried: ${redact(body.slice(0, 200))}`,
+        );
+      }
+
       if (isRateLimited(response.status)) {
-        const waitMs =
-          parseRetryAfter(response.headers) ??
-          jitter(Math.min(baseDelayMs * 2 ** attempt, maxDelayMs));
+        const backoff = jitter(Math.min(baseDelayMs * 2 ** attempt, maxDelayMs));
+        // Honour Retry-After, but never wait longer than maxDelayMs — a hostile
+        // or buggy header must not stall the CLI for hours.
+        const waitMs = Math.min(
+          parseRetryAfter(response.headers) ?? backoff,
+          maxDelayMs,
+        );
         logger.warn(
           `Rate limited. Waiting ${Math.round(waitMs / 1000)}s before retry...`,
         );
@@ -67,7 +96,7 @@ export async function withRetry<T>(
         continue;
       }
 
-      // Server error or other non-OK status
+      // Server error (5xx) or other non-OK status — retryable.
       const body = await response.text().catch(() => "");
       lastError = new Error(
         `HTTP ${response.status}: ${redact(body.slice(0, 200))}`,
@@ -75,12 +104,12 @@ export async function withRetry<T>(
     } catch (error) {
       if (error instanceof TransiaError) throw error;
       lastError = error as Error;
+    } finally {
+      clearTimeout(timer);
     }
 
     if (attempt < maxRetries) {
-      const waitMs = jitter(
-        Math.min(baseDelayMs * 2 ** attempt, maxDelayMs),
-      );
+      const waitMs = jitter(Math.min(baseDelayMs * 2 ** attempt, maxDelayMs));
       logger.debug(
         `Attempt ${attempt + 1}/${maxRetries + 1} failed. Retrying in ${Math.round(waitMs / 1000)}s...`,
       );
