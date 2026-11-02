@@ -125,6 +125,14 @@ function generateNextIntlFiles(
 /**
  * i18next format: locales/en/translation.json, locales/es/translation.json
  */
+/**
+ * i18next uses double-brace interpolation (`{{name}}`); our in-memory/state and
+ * next-intl form is single-brace (`{name}`). Convert only on the way to disk.
+ */
+function toI18nextInterp(value: string): string {
+  return value.replace(/\{([^{}]+)\}/g, "{{$1}}");
+}
+
 function generateI18nextFiles(
   translations: Map<string, Record<string, string>>,
   outputPath: string,
@@ -132,8 +140,10 @@ function generateI18nextFiles(
   const files: OutputFile[] = [];
 
   for (const [locale, strings] of translations) {
-    // Build nested structure from dot-separated keys
-    const nested = buildNestedObject(strings);
+    // Convert interpolation to i18next's {{x}} form, then nest.
+    const converted: Record<string, string> = {};
+    for (const [k, v] of Object.entries(strings)) converted[k] = toI18nextInterp(v);
+    const nested = buildNestedObject(converted);
 
     files.push({
       path: resolve(outputPath, locale, "translation.json"),

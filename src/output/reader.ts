@@ -48,12 +48,26 @@ export function readCatalogs(
     const flat =
       format === "next-intl"
         ? toStringRecord(parsed)
-        : flattenCatalog(parsed as Record<string, unknown>);
+        : fromI18nextInterp(flattenCatalog(parsed as Record<string, unknown>));
 
     catalogs.set(locale, flat);
+
   }
 
   return catalogs;
+}
+
+/**
+ * Convert i18next double-brace interpolation (`{{name}}`) back to the
+ * single-brace form used in-memory and by next-intl. Keeps the merge pipeline
+ * working in one interpolation space regardless of output format.
+ */
+function fromI18nextInterp(flat: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(flat)) {
+    out[k] = v.replace(/\{\{([^{}]+)\}\}/g, "{$1}");
+  }
+  return out;
 }
 
 /** Coerce an already-flat object into a string record, dropping non-strings. */
