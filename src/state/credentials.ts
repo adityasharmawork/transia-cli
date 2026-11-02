@@ -18,23 +18,35 @@ interface EncryptedPayload {
 
 const ALGORITHM = "aes-256-gcm";
 
+function keyFromMaterial(parts: string[]): Buffer {
+  return createHash("sha256").update(parts.join("|")).digest();
+}
+
 /**
- * Derive an encryption key from stable machine-specific values.
- * This isn't HSM-grade protection, but it means the credentials file
- * is useless if copied to another machine or user account.
+ * Derive an encryption key from stable machine/user values. This isn't
+ * HSM-grade protection, but it means the credentials file is useless if copied
+ * to another machine or user account. NOTE: `hostname()` is deliberately NOT
+ * included — it changes with DHCP/VPN/renames and used to silently invalidate
+ * the key, logging the user out at random.
  */
-function deriveKey(): Buffer {
-  const material = [
+export function deriveKey(): Buffer {
+  return keyFromMaterial([homedir(), userInfo().username, "transia-cli-credential-key"]);
+}
+
+/**
+ * The pre-migration key that mixed in `hostname()`. Used only to read files
+ * written by older versions, so an existing login survives the upgrade.
+ */
+export function legacyDeriveKey(): Buffer {
+  return keyFromMaterial([
     homedir(),
     hostname(),
     userInfo().username,
     "transia-cli-credential-key",
-  ].join("|");
-  return createHash("sha256").update(material).digest();
+  ]);
 }
 
-function encrypt(plaintext: string): EncryptedPayload {
-  const key = deriveKey();
+export function encrypt(plaintext: string, key: Buffer): EncryptedPayload {
   const iv = randomBytes(12);
   const cipher = createCipheriv(ALGORITHM, key, iv);
   const encrypted = Buffer.concat([
@@ -50,8 +62,7 @@ function encrypt(plaintext: string): EncryptedPayload {
   };
 }
 
-function decrypt(payload: EncryptedPayload): string {
-  const key = deriveKey();
+function decrypt(payload: EncryptedPayload, key: Buffer): string {
   const iv = Buffer.from(payload.iv, "hex");
   const data = Buffer.from(payload.data, "hex");
   const tag = Buffer.from(payload.tag, "hex");
@@ -84,9 +95,22 @@ export function loadCredentials(): Credentials | null {
 
     // v2: encrypted format
     if (data.v === 2 && data.iv && data.data && data.tag) {
-      const decrypted = decrypt(data as EncryptedPayload);
+      let decrypted: string;
+      let migrated = false;
+      try {
+        decrypted = decrypt(data as EncryptedPayload, deriveKey());
+      } catch {
+        // Fall back to the legacy hostname-bound key, then migrate on success.
+        try {
+          decrypted = decrypt(data as EncryptedPayload, legacyDeriveKey());
+          migrated = true;
+        } catch {
+          return null;
+        }
+      }
       const creds = JSON.parse(decrypted);
       if (creds.authToken && creds.email && creds.apiUrl) {
+        if (migrated) saveCredentials(creds as Credentials); // re-encrypt with the new key
         return creds as Credentials;
       }
       return null;
@@ -108,7 +132,7 @@ export function loadCredentials(): Credentials | null {
 
 export function saveCredentials(credentials: Credentials): void {
   const path = getCredentialsPath();
-  const payload = encrypt(JSON.stringify(credentials));
+  const payload = encrypt(JSON.stringify(credentials), deriveKey());
   writeFileSync(path, JSON.stringify(payload, null, 2), {
     mode: 0o600,
   });
