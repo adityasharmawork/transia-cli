@@ -7,8 +7,23 @@ const DEFAULT_API_URL = "https://transia.dev";
 
 let _httpWarningShown = false;
 
-function isLocalhost(url: string): boolean {
-  return url.includes("localhost") || url.includes("127.0.0.1");
+function isLocalhost(raw: string): boolean {
+  // Exact hostname match only. A substring check (`includes("localhost")`) is
+  // bypassable — `https://localhost.evil.com` and `https://evil.com/localhost`
+  // both contain "localhost" and would leak the bearer token to the attacker.
+  try {
+    const u = new URL(raw);
+    if (u.username || u.password) return false;
+    const host = u.hostname.toLowerCase().replace(/\.$/, "");
+    return (
+      host === "localhost" ||
+      host === "127.0.0.1" ||
+      host === "[::1]" ||
+      host === "::1"
+    );
+  } catch {
+    return false;
+  }
 }
 
 function getApiUrl(authenticated: boolean): string {
@@ -34,11 +49,16 @@ function getApiUrl(authenticated: boolean): string {
 }
 
 function getAuthToken(): string {
+  // CI / non-interactive: a token supplied via the real environment takes
+  // priority over the stored credential.
+  const envToken = process.env.TRANSIA_TOKEN;
+  if (envToken) return envToken;
+
   const credentials = loadCredentials();
   if (!credentials?.authToken) {
     throw new TransiaError(
       ExitCode.AUTH_ERROR,
-      "Not logged in. Run `transia login` to authenticate.",
+      "Not logged in. Run `transia login` (or set TRANSIA_TOKEN for CI) to authenticate.",
     );
   }
   return credentials.authToken;
