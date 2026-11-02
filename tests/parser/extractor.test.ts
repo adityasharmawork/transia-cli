@@ -30,4 +30,12 @@ describe("extractStringsFromSource (recorder + classifier)", () => {
   it("still excludes deny-listed/data-* attribute values", () => {
     expect(originals()).not.toContain("skip-me");
   });
+
+  it("honors excludeAttributes on the extract path (so extract and apply agree)", () => {
+    const withExclude = extractStringsFromSource(src, "A.tsx", ["tooltip"]).strings.map(
+      (s) => s.original,
+    );
+    expect(withExclude).not.toContain("Helpful hint"); // tooltip now excluded
+    expect(withExclude).toContain("Logo image"); // alt still included
+  });
 });

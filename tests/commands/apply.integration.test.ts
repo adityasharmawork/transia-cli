@@ -1,7 +1,17 @@
 import { describe, it, expect } from "vitest";
+import { parse } from "@babel/parser";
 import { transformSource } from "../../src/commands/apply";
 import { recordCandidates } from "../../src/parser/candidates";
 import { isLikelyUserFacing } from "../../src/parser/classify";
+
+const parseOk = (s: string) => {
+  try {
+    parse(s, { sourceType: "module", plugins: ["jsx", "typescript"] });
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 /** Simulate "already translated" by treating every user-facing site as known. */
 const knownFrom = (src: string) =>
@@ -66,5 +76,45 @@ describe("apply transformSource — corruption regressions", () => {
     const src = `function A(){ return <p>Untranslated string</p>; }`;
     const out = transformSource(src, "T.tsx", { knownHashes: new Set(), format: "next-intl" }).output;
     expect(out).toBe(src);
+  });
+
+  it("R1: single-line block body — hook is inserted INSIDE the body, before return", () => {
+    // Trailing newline AFTER the closing brace is the trigger: the first \n
+    // after `{` must not be mistaken for an in-body insertion point.
+    const src = `export function Badge() { return <span>New here</span>; }\nconst other = 1;\n`;
+    const out = run(src);
+    expect(out).toContain("useTranslations");
+    expect(out.indexOf("const t =")).toBeLessThan(out.indexOf("return"));
+    expect(parseOk(out)).toBe(true);
+  });
+
+  it("R2: a string consumed by .includes() is not wrapped (control flow preserved)", () => {
+    const src = `function A(){ return <div>{tabs.includes("Active") ? <span>Shown here</span> : null}</div>; }`;
+    const out = run(src);
+    expect(out).toContain(`includes("Active")`);
+    expect(out).not.toContain("Shown here");
+  });
+
+  it("R3: an attribute already using an expression container gets single braces, not double", () => {
+    const src = `function A(){ return <img title={"Logo pic here"} />; }`;
+    const out = run(src);
+    expect(out).toContain("title={t(");
+    expect(out).not.toContain("title={{");
+    expect(parseOk(out)).toBe(true);
+  });
+
+  it("R4: an implicit-return arrow component is wrapped into a block with a hook", () => {
+    const src = `export const B = () => <button>Click me now</button>;`;
+    const out = run(src);
+    expect(out).toContain("useTranslations");
+    expect(out).not.toContain("<button>Click me now</button>");
+    expect(parseOk(out)).toBe(true);
+  });
+
+  it("R4b: a parenthesized implicit-return arrow is safely skipped (left unchanged)", () => {
+    const src = `export const C = () => (<button>Done it now</button>);`;
+    const res = transformSource(src, "T.tsx", { knownHashes: knownFrom(src), format: "next-intl" });
+    expect(res.output).toBe(src);
+    expect(res.skippedComponents.length).toBeGreaterThan(0);
   });
 });

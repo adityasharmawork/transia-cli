@@ -128,10 +128,36 @@ export function planHooks(
       tNameByComponent.set(key, "t"); // already wired; reuse
       continue;
     }
+
+    // Implicit-return arrow (expression body): wrap into a block so a hook fits.
+    // Parenthesized bodies (`() => (<jsx/>)`) are left for a later pass — wrapping
+    // them naively would put a block inside the parens; skip + report instead.
     if (!bodyIsBlock) {
+      if (fn.type === "ArrowFunctionExpression") {
+        let i = fn.body.start - 1;
+        while (i >= 0 && /\s/.test(source[i])) i--;
+        if (source[i] === "(") {
+          skippedComponents.set(key, "parenthesized expression body (not yet supported)");
+          continue;
+        }
+        if (format === "i18next" && isAsync) {
+          skippedComponents.set(key, "async component not supported for i18next");
+          continue;
+        }
+        const tName = bindsT ? "tTransia" : "t";
+        tNameByComponent.set(key, tName);
+        insertions.push({
+          pos: fn.body.start,
+          text: `{ ${hookText(format, isAsync, tName)} return `,
+        });
+        insertions.push({ pos: fn.body.end, text: `; }` });
+        addImport(importSpecFor(format, isAsync));
+        continue;
+      }
       skippedComponents.set(key, "component body is an expression, not a block");
       continue;
     }
+
     if (format === "i18next" && isAsync) {
       skippedComponents.set(key, "async component not supported for i18next");
       continue;
@@ -140,9 +166,13 @@ export function planHooks(
     const tName = bindsT ? "tTransia" : "t";
     tNameByComponent.set(key, tName);
 
+    // Insert at the start of the first in-body line. The newline must fall
+    // INSIDE the body — for a single-line body the next \n is after the closing
+    // brace, which would put the hook at module scope. Clamp to the body.
     const braceStart = fn.body.start;
+    const bodyEnd = fn.body.end;
     const nlAfter = source.indexOf("\n", braceStart);
-    const pos = nlAfter !== -1 ? nlAfter + 1 : braceStart + 1;
+    const pos = nlAfter !== -1 && nlAfter < bodyEnd ? nlAfter + 1 : braceStart + 1;
     insertions.push({ pos, text: `  ${hookText(format, isAsync, tName)}\n` });
     addImport(importSpecFor(format, isAsync));
   }

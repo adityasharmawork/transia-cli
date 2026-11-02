@@ -46,8 +46,10 @@ function buildReplacement(c: Candidate, tName: string, source: string): string {
   }
 
   const call = `${tName}("${key}")`;
-  // jsx-text and jsx-attr replace a raw/quoted value, so they need a container.
-  if (c.role === "jsx-text" || c.role === "jsx-attr") return `{${call}}`;
+  // jsx-text and a bare attribute (attr="literal") need a container; an
+  // attribute that already used {...} must not get doubled braces.
+  if (c.role === "jsx-text") return `{${call}}`;
+  if (c.role === "jsx-attr") return c.attrExpressionContainer ? call : `{${call}}`;
   return call;
 }
 
@@ -193,6 +195,7 @@ export async function applyCommand(
   const skippedFiles: string[] = [];
   const diffs: string[] = [];
   let totalWrapped = 0;
+  let skippedComponentCount = 0;
 
   for (const file of uniqueFiles) {
     const source = readFileSync(file, "utf-8");
@@ -208,6 +211,8 @@ export async function applyCommand(
       );
       continue;
     }
+
+    skippedComponentCount += result.skippedComponents.length;
 
     if (result.output === source) continue; // nothing to do / idempotent
 
@@ -286,6 +291,16 @@ export async function applyCommand(
     console.log(
       chalk.yellow(
         `  ${skippedFiles.length} file(s) skipped for safety (unsafe transform or unwireable hook).`,
+      ),
+    );
+    console.log("");
+  }
+
+  if (skippedComponentCount > 0) {
+    console.log(
+      chalk.yellow(
+        `  ${skippedComponentCount} component(s) left untouched (could not wire a hook safely — ` +
+          `e.g. a parenthesized arrow body). Their strings were not wrapped.`,
       ),
     );
     console.log("");

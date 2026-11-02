@@ -30,6 +30,8 @@ export interface Candidate {
   role: CandidateRole;
   /** For jsx-attr: the attribute name (e.g. "alt", "className"). */
   attribute?: string;
+  /** For jsx-attr: true when the value was ALREADY in `{...}` (e.g. title={"x"}). */
+  attrExpressionContainer?: boolean;
   /** True if the string is an operand of a comparison (===, !==, <, > ...). */
   insideComparison: boolean;
   /** Nearest enclosing call callee name (e.g. "cn", "clsx", "t"). */
@@ -217,7 +219,11 @@ export function recordCandidates(source: string, filePath: string): Candidate[] 
     role: CandidateRole,
     rawValue: string,
     path: any,
-    extra: { attribute?: string; interpolations?: Candidate["interpolations"] } = {},
+    extra: {
+      attribute?: string;
+      attrExpressionContainer?: boolean;
+      interpolations?: Candidate["interpolations"];
+    } = {},
   ): void {
     const trimmed = rawValue.trim();
     if (!isTranslatableString(trimmed)) return;
@@ -230,6 +236,7 @@ export function recordCandidates(source: string, filePath: string): Candidate[] 
       end,
       role,
       attribute: extra.attribute,
+      attrExpressionContainer: extra.attrExpressionContainer,
       insideComparison: detectInsideComparison(path),
       insideCall: enclosingCallName(path),
       sanitized,
@@ -265,6 +272,7 @@ export function recordCandidates(source: string, filePath: string): Candidate[] 
       const parentType = parent?.node?.type;
       let role: CandidateRole = "jsx-expr-string";
       let attribute: string | undefined;
+      let attrExpressionContainer = false;
 
       if (parentType === "JSXAttribute") {
         role = "jsx-attr";
@@ -275,13 +283,17 @@ export function recordCandidates(source: string, filePath: string): Candidate[] 
         parent.parentPath?.node?.type === "JSXAttribute"
       ) {
         role = "jsx-attr";
+        attrExpressionContainer = true;
         const attrName = parent.parentPath.node.name?.name;
         attribute = typeof attrName === "string" ? attrName : undefined;
       } else if (parentType === "ConditionalExpression") {
         role = "conditional";
       }
 
-      record(path.node.start, path.node.end, role, path.node.value, path, { attribute });
+      record(path.node.start, path.node.end, role, path.node.value, path, {
+        attribute,
+        attrExpressionContainer,
+      });
     },
 
     TemplateLiteral(path: any) {

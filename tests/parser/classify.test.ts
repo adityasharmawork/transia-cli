@@ -25,6 +25,12 @@ describe("isLikelyUserFacing", () => {
     expect(isLikelyUserFacing(mk({ insideCall: "clsx" }), [])).toBe(false);
   });
 
+  it("rejects a string consumed by a predicate call (includes/startsWith/...)", () => {
+    expect(isLikelyUserFacing(mk({ insideCall: "includes" }), [])).toBe(false);
+    expect(isLikelyUserFacing(mk({ insideCall: "startsWith" }), [])).toBe(false);
+    expect(isLikelyUserFacing(mk({ insideCall: "indexOf" }), [])).toBe(false);
+  });
+
   it("rejects a string already inside a t() call (idempotency)", () => {
     expect(isLikelyUserFacing(mk({ insideCall: "t" }), [])).toBe(false);
   });

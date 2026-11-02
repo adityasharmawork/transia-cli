@@ -96,7 +96,11 @@ export async function translateCommand(
     for (const file of uniqueFiles) {
       const source = readFileSync(file, "utf-8");
       const relativePath = relative(projectRoot, file);
-      const result = extractStringsFromSource(source, relativePath);
+      const result = extractStringsFromSource(
+        source,
+        relativePath,
+        config.apply?.excludeAttributes ?? [],
+      );
 
       if (result.errors.length > 0) {
         parseErrors += result.errors.length;
