@@ -261,7 +261,7 @@ export async function translateCommand(
                   // string stays untranslated and is retried on the next run.
                   validationFailures++;
                   logger.warn(
-                    `Rejected ${locale} translation — ${validation.errors.join("; ")}`,
+                    `Rejected ${locale} translation for ${str.source} — ${validation.errors.join("; ")}`,
                   );
                 }
               }

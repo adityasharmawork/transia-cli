@@ -1,6 +1,14 @@
 import { TransiaError, ExitCode } from "./errors.js";
 import { logger, redact } from "./logger.js";
 
+/**
+ * Default per-request timeout. Generous (2 min) because a translate batch can
+ * legitimately take a while — a 50-string request can emit thousands of tokens.
+ * The timeout exists to kill a genuinely hung connection, not a slow-but-fine
+ * response, so erring large avoids aborting (and re-spending on) healthy requests.
+ */
+export const DEFAULT_TIMEOUT_MS = 120000;
+
 export interface RetryOptions {
   maxRetries?: number;
   baseDelayMs?: number;
@@ -48,7 +56,7 @@ export async function withRetry<T>(
     maxRetries = 3,
     baseDelayMs = 1000,
     maxDelayMs = 30000,
-    timeoutMs = 30000,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
   } = options;
 
   let lastError: Error | null = null;

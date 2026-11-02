@@ -1,9 +1,13 @@
 import { describe, it, expect, vi } from "vitest";
-import { withRetry } from "../../src/utils/retry";
+import { withRetry, DEFAULT_TIMEOUT_MS } from "../../src/utils/retry";
 
 const parseOk = async () => ({ ok: true });
 
 describe("withRetry hardening", () => {
+  it("defaults the request timeout to 120s (not so tight it aborts slow-but-fine batches)", () => {
+    expect(DEFAULT_TIMEOUT_MS).toBe(120000);
+  });
+
   it("does not retry a 4xx client error (fn called once, then throws)", async () => {
     const fn = vi.fn(async () => new Response("bad request", { status: 400 }));
     await expect(withRetry(fn, parseOk, { maxRetries: 3, baseDelayMs: 0 })).rejects.toThrow();

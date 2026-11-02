@@ -28,4 +28,27 @@ describe("validateTranslation — placeholder & brace integrity", () => {
     expect(r.valid).toBe(true);
     expect(r.errors).toEqual([]);
   });
+
+  it("accepts a correctly translated ICU plural (compares top-level arg, not sub-messages)", () => {
+    const r = validateTranslation(
+      "k",
+      "{count, plural, one {# item} other {# items}}",
+      "{count, plural, one {# artículo} other {# artículos}}",
+    );
+    expect(r.valid).toBe(true);
+  });
+
+  it("rejects an ICU plural that drops the top-level argument", () => {
+    const r = validateTranslation(
+      "k",
+      "{count, plural, one {# item} other {# items}}",
+      "varios artículos",
+    );
+    expect(r.valid).toBe(false);
+  });
+
+  it("rejects misnested braces even when open/close counts match", () => {
+    const r = validateTranslation("k", "hello", "}name{");
+    expect(r.valid).toBe(false);
+  });
 });
