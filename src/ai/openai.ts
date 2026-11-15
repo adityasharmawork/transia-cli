@@ -3,7 +3,7 @@ import type {
   TranslationRequest,
   TranslationResult,
 } from "./provider.js";
-import { buildTranslationPrompt } from "./prompts.js";
+import { buildPromptForRequest } from "./provider.js";
 import { withRetry } from "../utils/retry.js";
 import { logger } from "../utils/logger.js";
 
@@ -25,11 +25,7 @@ export class OpenAIProvider implements AIProvider {
   }
 
   async translate(request: TranslationRequest): Promise<TranslationResult> {
-    const { system, user } = buildTranslationPrompt({
-      sourceLocale: request.sourceLocale,
-      targetLocale: request.targetLocale,
-      strings: request.strings,
-    });
+    const { system, user } = buildPromptForRequest(request);
 
     logger.debug(
       `OpenAI: Translating ${request.strings.length} strings to ${request.targetLocale} using ${this.model}`,
