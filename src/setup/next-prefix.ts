@@ -38,6 +38,75 @@ export function middlewareFilename(nextMajor: number | null): "middleware.ts" | 
   return nextMajor !== null && nextMajor >= 16 ? "proxy.ts" : "middleware.ts";
 }
 
+// --- Route-tree move plan (app/* -> app/[locale]/*) ---
+
+export interface AppEntry {
+  name: string;
+  isDir: boolean;
+}
+
+export interface MovePlan {
+  /** Top-level entry names to move under [locale]/. */
+  move: string[];
+  /** Top-level entry names that stay at the app root. */
+  keep: string[];
+  /** Structured moves for execution: { from, to } repo-relative paths. */
+  moves: { from: string; to: string }[];
+  /** Human-readable `git mv` commands for the dry-run / guided output. */
+  gitMvCommands: string[];
+}
+
+/**
+ * File-convention metadata that Next resolves at the app root and that must NOT
+ * move under [locale] (matched by basename before the first dot, so
+ * `opengraph-image.png`, `icon.svg`, `sitemap.ts` all match). `global-error`
+ * also must stay at the app root.
+ */
+const METADATA_BASENAMES = new Set([
+  "favicon",
+  "icon",
+  "apple-icon",
+  "apple-touch-icon",
+  "opengraph-image",
+  "twitter-image",
+  "robots",
+  "sitemap",
+  "manifest",
+  "global-error",
+]);
+
+function isKeptFile(name: string): boolean {
+  const base = name.split(".")[0];
+  return METADATA_BASENAMES.has(base);
+}
+
+/**
+ * Partition an app dir's top-level entries into what moves under `[locale]/` and
+ * what stays. Keep at root: the `api` directory, the `[locale]` dir itself (if
+ * present), and file-convention metadata (favicon/icon/opengraph-image/robots/
+ * sitemap/manifest/global-error). Move everything else — route segments, route
+ * groups `(...)`, nested dirs, and colocated files — so relative imports AMONG
+ * moved files are preserved (they all shift by the same depth). Pure: callers
+ * pass the directory listing and execute `moves` under a clean-tree guard.
+ */
+export function computeMovePlan(entries: AppEntry[], appRel = "app"): MovePlan {
+  const plan: MovePlan = { move: [], keep: [], moves: [], gitMvCommands: [] };
+  for (const e of entries) {
+    if (e.name === "[locale]") continue; // already the target segment
+    const keep = (e.isDir && e.name === "api") || (!e.isDir && isKeptFile(e.name));
+    if (keep) {
+      plan.keep.push(e.name);
+      continue;
+    }
+    plan.move.push(e.name);
+    const from = `${appRel}/${e.name}`;
+    const to = `${appRel}/[locale]/${e.name}`;
+    plan.moves.push({ from, to });
+    plan.gitMvCommands.push(`git mv "${from}" "${to}"`);
+  }
+  return plan;
+}
+
 /** Source for `i18n/routing.ts`. */
 export function routingModule(
   sourceLocale: string,

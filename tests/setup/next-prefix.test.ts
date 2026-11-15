@@ -8,6 +8,7 @@ import {
   localeLayoutTemplate,
   nextMajorFromPackage,
   middlewareFilename,
+  computeMovePlan,
 } from "../../src/setup/next-prefix";
 
 const parses = (src: string) =>
@@ -79,5 +80,64 @@ describe("Next version detection", () => {
     expect(middlewareFilename(17)).toBe("proxy.ts");
     expect(middlewareFilename(15)).toBe("middleware.ts");
     expect(middlewareFilename(null)).toBe("middleware.ts");
+  });
+});
+
+describe("computeMovePlan", () => {
+  const entries = [
+    { name: "page.tsx", isDir: false },
+    { name: "layout.tsx", isDir: false },
+    { name: "globals.css", isDir: false },
+    { name: "(marketing)", isDir: true },
+    { name: "dashboard", isDir: true },
+    { name: "api", isDir: true },
+    { name: "sitemap.ts", isDir: false },
+    { name: "robots.ts", isDir: false },
+    { name: "favicon.ico", isDir: false },
+    { name: "opengraph-image.png", isDir: false },
+    { name: "global-error.tsx", isDir: false },
+  ];
+  const plan = computeMovePlan(entries);
+
+  it("keeps api, metadata files, and global-error at the app root", () => {
+    expect(plan.keep).toEqual(
+      expect.arrayContaining([
+        "api",
+        "sitemap.ts",
+        "robots.ts",
+        "favicon.ico",
+        "opengraph-image.png",
+        "global-error.tsx",
+      ]),
+    );
+    expect(plan.move).not.toContain("api");
+    expect(plan.move).not.toContain("sitemap.ts");
+    expect(plan.move).not.toContain("favicon.ico");
+  });
+
+  it("moves route segments, groups, and colocated files under [locale]", () => {
+    expect(plan.move).toEqual(
+      expect.arrayContaining(["page.tsx", "layout.tsx", "(marketing)", "dashboard", "globals.css"]),
+    );
+  });
+
+  it("emits git mv commands and structured moves into the [locale] segment", () => {
+    expect(plan.gitMvCommands).toContain('git mv "app/page.tsx" "app/[locale]/page.tsx"');
+    expect(plan.moves).toContainEqual({ from: "app/dashboard", to: "app/[locale]/dashboard" });
+  });
+
+  it("ignores an existing [locale] dir and respects a src/app base", () => {
+    const srcPlan = computeMovePlan(
+      [
+        { name: "page.tsx", isDir: false },
+        { name: "[locale]", isDir: true },
+      ],
+      "src/app",
+    );
+    expect(srcPlan.move).toEqual(["page.tsx"]);
+    expect(srcPlan.moves).toContainEqual({
+      from: "src/app/page.tsx",
+      to: "src/app/[locale]/page.tsx",
+    });
   });
 });
