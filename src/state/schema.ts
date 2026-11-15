@@ -46,6 +46,17 @@ export const TransiaConfigSchema = z.object({
       excludeAttributes: z.array(z.string()).default([]),
     })
     .optional(),
+  translation: z
+    .object({
+      // Preferred translations for specific source terms, applied consistently
+      // (brand/product vocabulary). Map of source text -> required translation.
+      glossary: z.record(z.string(), z.string()).optional(),
+      // Terms to keep verbatim in every locale (brand names, code tokens).
+      doNotTranslate: z.array(z.string()).optional(),
+      // Tone/register the model should use.
+      formality: z.enum(["formal", "informal", "neutral"]).optional(),
+    })
+    .optional(),
 });
 
 export type TransiaConfig = z.infer<typeof TransiaConfigSchema>;
