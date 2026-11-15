@@ -81,6 +81,16 @@ describe("recordCandidates — per-string transia-context comments", () => {
     expect(find(cands, "Early")?.context).toBeNull();
     expect(find(cands, "Late")?.context).toBe("later");
   });
+
+  it("does not apply a comment that sits to the right of a string on the same line", () => {
+    const src = `function A(){ return (<div>
+      <h1>Title</h1>{/* transia-context: footer */}
+      <p>Body</p>
+    </div>); }`;
+    const cands = recordCandidates(src, "A.tsx");
+    expect(find(cands, "Title")?.context).toBeNull();
+    expect(find(cands, "Body")?.context).toBe("footer");
+  });
 });
 
 describe("recordCandidates — auto role/attribute context", () => {

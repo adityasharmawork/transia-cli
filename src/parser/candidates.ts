@@ -46,7 +46,7 @@ export interface Candidate {
   hash: string;
   /** Stable id of the enclosing component function (start offset as string). */
   componentPath: string;
-  /** transia-context comment for the file, if any. */
+  /** Nearest-preceding `transia-context` comment (in source order), if any. */
   context: string | null;
   /** 1-based source line. */
   line: number;
@@ -123,14 +123,16 @@ function deriveAutoContext(
 
 interface ContextComment {
   line: number;
+  column: number;
   text: string;
 }
 
 /**
- * Collect EVERY `transia-context:` comment in the file with its source line,
- * sorted by line. A string then takes the nearest comment at or above it (see
- * resolveExplicitContext), so an author can scope context per section instead
- * of one directive for the whole file.
+ * Collect EVERY `transia-context:` comment in the file with its source
+ * position, sorted in source order (line, then column). A string then takes the
+ * nearest comment that precedes it in source order (see resolveExplicitContext),
+ * so an author can scope context per section instead of one directive for the
+ * whole file.
  */
 function collectContextComments(comments?: Comment[] | null): ContextComment[] {
   const out: ContextComment[] = [];
@@ -138,23 +140,34 @@ function collectContextComments(comments?: Comment[] | null): ContextComment[] {
   for (const comment of comments) {
     const match = comment.value.match(/transia-context:\s*(.+)/);
     if (match) {
-      out.push({ line: comment.loc?.start.line ?? 0, text: match[1].trim() });
+      out.push({
+        line: comment.loc?.start.line ?? 0,
+        column: comment.loc?.start.column ?? 0,
+        text: match[1].trim(),
+      });
     }
   }
-  out.sort((a, b) => a.line - b.line);
+  out.sort((a, b) => a.line - b.line || a.column - b.column);
   return out;
 }
 
 /**
- * The explicit context for a string at `line`: the text of the last
- * `transia-context` comment on a line <= the string's line, or null if none
- * precedes it. A top-of-file comment therefore still applies to everything
- * after it (back-compat with the old file-level behavior).
+ * The explicit context for a string at (`line`, `column`): the text of the last
+ * `transia-context` comment that precedes the string in source order (an earlier
+ * line, or the same line at an earlier-or-equal column), or null if none
+ * precedes it. A directive therefore applies to what comes AFTER it — a comment
+ * sitting to the right of a string on the same line does not back-fill that
+ * string. A top-of-file comment still applies to everything after it.
  */
-function resolveExplicitContext(line: number, comments: ContextComment[]): string | null {
+function resolveExplicitContext(
+  line: number,
+  column: number,
+  comments: ContextComment[],
+): string | null {
   let found: string | null = null;
   for (const c of comments) {
-    if (c.line <= line) found = c.text;
+    const precedes = c.line < line || (c.line === line && c.column <= column);
+    if (precedes) found = c.text;
     else break;
   }
   return found;
@@ -328,6 +341,7 @@ export function recordCandidates(source: string, filePath: string): Candidate[] 
     if (!isTranslatableString(trimmed)) return;
 
     const line = path.node.loc?.start.line ?? 0;
+    const column = path.node.loc?.start.column ?? 0;
     const { sanitized } = sanitizeForPrompt(trimmed, `${filePath}:${line}`);
 
     const elementName = enclosingElementName(path);
@@ -345,7 +359,7 @@ export function recordCandidates(source: string, filePath: string): Candidate[] 
       sanitized,
       hash: hashString(sanitized),
       componentPath: enclosingComponentPath(path),
-      context: resolveExplicitContext(line, contextComments),
+      context: resolveExplicitContext(line, column, contextComments),
       line,
       interpolations: extra.interpolations,
     });
