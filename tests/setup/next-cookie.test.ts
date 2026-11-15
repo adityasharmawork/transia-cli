@@ -1,5 +1,37 @@
 import { describe, it, expect } from "vitest";
-import { cookieRequestConfig, localesModule } from "../../src/setup/next-cookie";
+import { parse } from "@babel/parser";
+import {
+  cookieRequestConfig,
+  localesModule,
+  wrapLayoutForNextIntl,
+} from "../../src/setup/next-cookie";
+
+const parseOk = (s: string) => {
+  try {
+    parse(s, { sourceType: "module", plugins: ["jsx", "typescript"] });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const ASYNC_LAYOUT = `export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html>
+      <body>{children}</body>
+    </html>
+  );
+}
+`;
+
+const SYNC_LAYOUT = `export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en">
+      <body className="app">{children}</body>
+    </html>
+  );
+}
+`;
 
 describe("cookie-mode next-intl generators", () => {
   it("request config reads the NEXT_LOCALE cookie and falls back to the default locale", () => {
@@ -21,5 +53,41 @@ describe("cookie-mode next-intl generators", () => {
     expect(src).toContain('"es"');
     expect(src).toContain('"fr"');
     expect(src).toContain('defaultLocale = "en"');
+  });
+});
+
+describe("wrapLayoutForNextIntl", () => {
+  it("wraps a standard async layout: provider, lang, server imports; output re-parses", () => {
+    const r = wrapLayoutForNextIntl(ASYNC_LAYOUT);
+    expect(r.wrapped).toBe(true);
+    const out = (r as { output: string }).output;
+    expect(out).toContain("NextIntlClientProvider");
+    expect(out).toContain("getLocale");
+    expect(out).toContain("getMessages");
+    expect(out).toContain("lang={locale}");
+    expect(parseOk(out)).toBe(true);
+  });
+
+  it("wraps a sync layout by making the component async", () => {
+    const r = wrapLayoutForNextIntl(SYNC_LAYOUT);
+    expect(r.wrapped).toBe(true);
+    const out = (r as { output: string }).output;
+    expect(out).toContain("async function RootLayout");
+    expect(out).toContain("NextIntlClientProvider");
+    expect(parseOk(out)).toBe(true);
+  });
+
+  it("leaves an already-wrapped layout untouched", () => {
+    const already = ASYNC_LAYOUT.replace(
+      "<body>{children}</body>",
+      "<body><NextIntlClientProvider>{children}</NextIntlClientProvider></body>",
+    );
+    expect(wrapLayoutForNextIntl(already).wrapped).toBe(false);
+  });
+
+  it("refuses a non-standard layout (no <html>/<body>) with a reason", () => {
+    const r = wrapLayoutForNextIntl(`export default function X() { return <div>hi there</div>; }`);
+    expect(r.wrapped).toBe(false);
+    expect((r as { reason: string }).reason).toBeTruthy();
   });
 });
