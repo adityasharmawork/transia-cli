@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isValidLocale } from "../utils/locale.js";
 
 // --- Config schema ---
 
@@ -15,10 +16,14 @@ export const OutputConfigSchema = z.object({
 
 export const TransiaConfigSchema = z.object({
   version: z.number().int().min(1),
-  sourceLocale: z.string().min(2),
+  sourceLocale: z
+    .string()
+    .refine(isValidLocale, "Invalid source locale (use a BCP-47 tag like 'en', 'en-US', 'zh-Hans')"),
   targetLocales: z
     .array(
-      z.string().regex(/^[a-z]{2}(-[A-Z]{2})?$/, "Invalid locale format (use 'es' or 'en-US')"),
+      z
+        .string()
+        .refine(isValidLocale, "Invalid locale tag (use a BCP-47 tag like 'es', 'en-US', 'zh-Hans', 'es-419')"),
     )
     .min(1)
     .refine(
