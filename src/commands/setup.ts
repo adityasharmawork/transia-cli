@@ -3,8 +3,10 @@ import {
   readFileSync,
   writeFileSync,
   mkdirSync,
+  copyFileSync,
+  unlinkSync,
 } from "node:fs";
-import { resolve, relative } from "node:path";
+import { resolve, relative, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
 import ora from "ora";
 import chalk from "chalk";
@@ -120,6 +122,16 @@ function setupNextIntl(
     logger.info("next-intl already installed, skipping.");
   }
 
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupDir = resolve(projectRoot, ".transia-backup", timestamp);
+  const rel = (p: string) => relative(projectRoot, p);
+  const backupAndRemove = (p: string): void => {
+    const dest = resolve(backupDir, rel(p));
+    mkdirSync(dirname(dest), { recursive: true });
+    copyFileSync(p, dest);
+    unlinkSync(p);
+  };
+
   // 2. Cookie-mode i18n config: a request config that reads the locale from a
   //    cookie, and a locales module. No routing.ts, no middleware.ts — the old
   //    prefix middleware 404'd every route because pages were never moved under
@@ -127,18 +139,42 @@ function setupNextIntl(
   const i18nDir = resolve(projectRoot, "i18n");
   mkdirSync(i18nDir, { recursive: true });
   const requestPath = resolve(i18nDir, "request.ts");
-  if (!existsSync(requestPath)) {
-    writeFileSync(
-      requestPath,
-      cookieRequestConfig(config.sourceLocale, allLocales, config.output.path),
-      "utf-8",
-    );
+  const requestSrc = cookieRequestConfig(config.sourceLocale, allLocales, config.output.path);
+  const existingRequest = existsSync(requestPath) ? readFileSync(requestPath, "utf-8") : null;
+  if (existingRequest === null) {
+    writeFileSync(requestPath, requestSrc, "utf-8");
     created.push("i18n/request.ts");
+  } else if (
+    existingRequest.includes("requestLocale") ||
+    existingRequest.includes("./routing")
+  ) {
+    // Migrate an old prefix-mode request config to cookie mode (backup first).
+    const outcome = safeWriteFile(requestPath, requestSrc, {
+      backupPath: resolve(backupDir, rel(requestPath)),
+    });
+    if (outcome === "written") created.push("i18n/request.ts (migrated prefix → cookie mode)");
   }
   const localesPath = resolve(i18nDir, "locales.ts");
   if (!existsSync(localesPath)) {
     writeFileSync(localesPath, localesModule(config.sourceLocale, allLocales), "utf-8");
     created.push("i18n/locales.ts");
+  }
+
+  // 2b. Remove a stale next-intl prefix middleware (it 404s in cookie mode).
+  for (const mw of [
+    resolve(projectRoot, "middleware.ts"),
+    resolve(projectRoot, "src", "middleware.ts"),
+  ]) {
+    if (!existsSync(mw)) continue;
+    const mwSrc = readFileSync(mw, "utf-8");
+    if (mwSrc.includes("next-intl/middleware") || mwSrc.includes("createMiddleware")) {
+      backupAndRemove(mw);
+      created.push(`${rel(mw)} (removed — cookie mode needs no middleware; backed up)`);
+    } else {
+      skipped.push(
+        `${rel(mw)} exists — if it adds next-intl prefix routing, remove it (cookie mode needs no middleware).`,
+      );
+    }
   }
 
   // 3. Messages directory with source locale JSON.
@@ -149,10 +185,6 @@ function setupNextIntl(
     writeFileSync(sourceLocalePath, "{}\n", "utf-8");
     created.push(`${config.output.path}/${config.sourceLocale}.json`);
   }
-
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const backupDir = resolve(projectRoot, ".transia-backup", timestamp);
-  const rel = (p: string) => relative(projectRoot, p);
 
   // 4. Wrap the root layout with NextIntlClientProvider (safe: backup + re-parse;
   //    skip with instructions if the layout isn't the standard shape).

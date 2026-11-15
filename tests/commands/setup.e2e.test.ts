@@ -68,4 +68,24 @@ describe("setupCommand — Next.js cookie mode (no middleware)", () => {
     // source messages file
     expect(existsSync(join(root, "locales", "en.json"))).toBe(true);
   });
+
+  it("migrates an old prefix-mode setup: rewrites request.ts and removes the prefix middleware", async () => {
+    // Simulate a project configured by an earlier (prefix-routing) build.
+    mkdirSync(join(root, "i18n"), { recursive: true });
+    writeFileSync(
+      join(root, "i18n", "request.ts"),
+      `import { getRequestConfig } from "next-intl/server";\nimport { routing } from "./routing";\nexport default getRequestConfig(async ({ requestLocale }) => {\n  const locale = await requestLocale;\n  return { locale, messages: {} };\n});\n`,
+    );
+    writeFileSync(
+      join(root, "middleware.ts"),
+      `import createMiddleware from "next-intl/middleware";\nexport default createMiddleware({});\n`,
+    );
+
+    await setupCommand(root, {});
+
+    // request.ts migrated to cookie mode; prefix middleware removed (backed up).
+    expect(readFileSync(join(root, "i18n", "request.ts"), "utf-8")).toContain("NEXT_LOCALE");
+    expect(existsSync(join(root, "middleware.ts"))).toBe(false);
+    expect(existsSync(join(root, ".transia-backup"))).toBe(true);
+  });
 });

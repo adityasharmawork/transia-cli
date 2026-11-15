@@ -81,6 +81,18 @@ export function wrapLayoutForNextIntl(source: string): LayoutWrapResult {
     return { wrapped: false, reason: "could not parse the layout file" };
   }
 
+  // A "use client" layout can't call server-only getLocale()/getMessages(), and
+  // an async client component is invalid — refuse rather than produce code that
+  // parses but is broken. The root layout should stay a server component.
+  const directives = (ast.program as any).directives ?? [];
+  if (directives.some((d: any) => d.value?.value === "use client")) {
+    return {
+      wrapped: false,
+      reason:
+        'the root layout is a "use client" component; keep it a server component so getLocale()/getMessages() work, then wrap <body> manually',
+    };
+  }
+
   // Locate the default-exported component function.
   let fnNode: any = null;
   traverse(ast, {

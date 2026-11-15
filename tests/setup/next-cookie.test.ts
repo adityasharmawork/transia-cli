@@ -91,6 +91,12 @@ describe("wrapLayoutForNextIntl", () => {
     expect(r.wrapped).toBe(false);
     expect((r as { reason: string }).reason).toBeTruthy();
   });
+
+  it("refuses a \"use client\" layout (server APIs can't go in a client component)", () => {
+    const r = wrapLayoutForNextIntl(`"use client";\n${ASYNC_LAYOUT}`);
+    expect(r.wrapped).toBe(false);
+    expect((r as { reason: string }).reason).toMatch(/client/i);
+  });
 });
 
 describe("addNextIntlPlugin", () => {
