@@ -52,13 +52,43 @@ export interface Candidate {
 
 const COMPARISON_OPERATORS = new Set(["==", "===", "!=", "!==", "<", ">", "<=", ">="]);
 
-function extractTransiaContext(comments?: Comment[] | null): string | null {
-  if (!comments) return null;
+interface ContextComment {
+  line: number;
+  text: string;
+}
+
+/**
+ * Collect EVERY `transia-context:` comment in the file with its source line,
+ * sorted by line. A string then takes the nearest comment at or above it (see
+ * resolveExplicitContext), so an author can scope context per section instead
+ * of one directive for the whole file.
+ */
+function collectContextComments(comments?: Comment[] | null): ContextComment[] {
+  const out: ContextComment[] = [];
+  if (!comments) return out;
   for (const comment of comments) {
     const match = comment.value.match(/transia-context:\s*(.+)/);
-    if (match) return match[1].trim();
+    if (match) {
+      out.push({ line: comment.loc?.start.line ?? 0, text: match[1].trim() });
+    }
   }
-  return null;
+  out.sort((a, b) => a.line - b.line);
+  return out;
+}
+
+/**
+ * The explicit context for a string at `line`: the text of the last
+ * `transia-context` comment on a line <= the string's line, or null if none
+ * precedes it. A top-of-file comment therefore still applies to everything
+ * after it (back-compat with the old file-level behavior).
+ */
+function resolveExplicitContext(line: number, comments: ContextComment[]): string | null {
+  let found: string | null = null;
+  for (const c of comments) {
+    if (c.line <= line) found = c.text;
+    else break;
+  }
+  return found;
 }
 
 function isInsideJSX(path: any): boolean {
@@ -211,7 +241,7 @@ export function recordCandidates(source: string, filePath: string): Candidate[] 
     return candidates;
   }
 
-  const fileContext = ast.comments ? extractTransiaContext(ast.comments) : null;
+  const contextComments = collectContextComments(ast.comments);
 
   function record(
     start: number,
@@ -242,7 +272,7 @@ export function recordCandidates(source: string, filePath: string): Candidate[] 
       sanitized,
       hash: hashString(sanitized),
       componentPath: enclosingComponentPath(path),
-      context: fileContext,
+      context: resolveExplicitContext(line, contextComments),
       line,
       interpolations: extra.interpolations,
     });

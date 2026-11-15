@@ -47,3 +47,38 @@ describe("recordCandidates", () => {
     expect(src.slice(c!.interpolations![0].exprStart, c!.interpolations![0].exprEnd)).toBe("name");
   });
 });
+
+describe("recordCandidates — per-string transia-context comments", () => {
+  it("applies the nearest preceding transia-context comment, not just the first", () => {
+    const src = `function A(){
+      return (<div>
+        {/* transia-context: hero section */}
+        <h1>Welcome</h1>
+        {/* transia-context: footer section */}
+        <p>Goodbye</p>
+      </div>);
+    }`;
+    const cands = recordCandidates(src, "A.tsx");
+    expect(find(cands, "Welcome")?.context).toBe("hero section");
+    expect(find(cands, "Goodbye")?.context).toBe("footer section");
+  });
+
+  it("still applies a single top-of-file comment to every string (back-compat)", () => {
+    const src = `// transia-context: marketing page
+      function A(){ return (<div><p>One</p><p>Two</p></div>); }`;
+    const cands = recordCandidates(src, "A.tsx");
+    expect(find(cands, "One")?.context).toBe("marketing page");
+    expect(find(cands, "Two")?.context).toBe("marketing page");
+  });
+
+  it("leaves context null for strings before any comment", () => {
+    const src = `function A(){ return (<div>
+      <p>Early</p>
+      {/* transia-context: later */}
+      <p>Late</p>
+    </div>); }`;
+    const cands = recordCandidates(src, "A.tsx");
+    expect(find(cands, "Early")?.context).toBeNull();
+    expect(find(cands, "Late")?.context).toBe("later");
+  });
+});
