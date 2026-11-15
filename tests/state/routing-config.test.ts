@@ -25,3 +25,19 @@ describe("TransiaConfig.routing", () => {
     expect(() => TransiaConfigSchema.parse({ ...base, routing: "subdomain" })).toThrow();
   });
 });
+
+describe("TransiaConfig.siteUrl", () => {
+  it("accepts an absolute URL (for hreflang + sitemap)", () => {
+    expect(TransiaConfigSchema.parse({ ...base, siteUrl: "https://example.com" }).siteUrl).toBe(
+      "https://example.com",
+    );
+  });
+
+  it("is optional (absent is fine)", () => {
+    expect(TransiaConfigSchema.parse(base).siteUrl).toBeUndefined();
+  });
+
+  it("rejects a non-URL", () => {
+    expect(() => TransiaConfigSchema.parse({ ...base, siteUrl: "not a url" })).toThrow();
+  });
+});

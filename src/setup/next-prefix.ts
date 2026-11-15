@@ -228,6 +228,73 @@ export default async function LocaleLayout({
 `;
 }
 
+// --- hreflang alternates + localized sitemap generators ---
+
+/** Source for `i18n/metadata.ts` — a getAlternates(pathname) hreflang helper. */
+export function metadataHelperModule(siteUrl: string): string {
+  const base = siteUrl.replace(/\/+$/, "");
+  return `import { routing } from "./routing";
+import { getPathname } from "./navigation";
+
+const SITE_URL = "${base}";
+
+/**
+ * Build canonical + hreflang alternates for a page. Pass the SOURCE pathname
+ * (default-locale form, e.g. "/about"); spread the result into a page's
+ * generateMetadata \`alternates\`. next-intl's middleware also emits hreflang
+ * Link headers — set \`alternateLinks: false\` in i18n/routing.ts if you want
+ * these <head> tags to be the only source.
+ */
+export function getAlternates(pathname: string) {
+  const languages: Record<string, string> = {};
+  for (const locale of routing.locales) {
+    languages[locale] = SITE_URL + getPathname({ href: pathname, locale });
+  }
+  const canonical = SITE_URL + getPathname({ href: pathname, locale: routing.defaultLocale });
+
+  return {
+    canonical,
+    languages: { ...languages, "x-default": canonical },
+  };
+}
+`;
+}
+
+/** Source for `app/sitemap.ts` — a localized sitemap with per-entry alternates. */
+export function sitemapModule(
+  siteUrl: string,
+  routingImport = "../i18n/routing",
+  navigationImport = "../i18n/navigation",
+): string {
+  const base = siteUrl.replace(/\/+$/, "");
+  return `import type { MetadataRoute } from "next";
+import { routing } from "${routingImport}";
+import { getPathname } from "${navigationImport}";
+
+const SITE_URL = "${base}";
+
+// List your public routes here (SOURCE pathnames, default-locale form).
+// Locale variants + hreflang alternates are generated automatically.
+const pathnames = ["/"];
+
+export default function sitemap(): MetadataRoute.Sitemap {
+  return pathnames.map((pathname) => {
+    const languages: Record<string, string> = {};
+    for (const locale of routing.locales) {
+      languages[locale] = SITE_URL + getPathname({ href: pathname, locale });
+    }
+    const canonical = SITE_URL + getPathname({ href: pathname, locale: routing.defaultLocale });
+
+    return {
+      url: canonical,
+      lastModified: new Date(),
+      alternates: { languages: { ...languages, "x-default": canonical } },
+    };
+  });
+}
+`;
+}
+
 // --- Transform an existing root layout into a [locale] layout (for --move) ---
 
 export type LayoutWrapResult =

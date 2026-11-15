@@ -78,6 +78,24 @@ describe("setupNextIntlPrefix (scaffold; default, no --move)", () => {
     expect(notes).toMatch(/git mv .*\[locale\]/);
     expect(notes).toMatch(/git mv "app\/layout\.tsx"/);
     expect(notes).toMatch(/adapt the moved app\/\[locale\]\/layout\.tsx/i);
+
+    // No siteUrl -> no sitemap/metadata, just a note to set it.
+    expect(existsSync(resolve(dir, "i18n/metadata.ts"))).toBe(false);
+    expect(existsSync(resolve(dir, "app/sitemap.ts"))).toBe(false);
+    expect(notes).toMatch(/siteUrl/);
+  });
+
+  it("writes i18n/metadata.ts + app/sitemap.ts when siteUrl is set", () => {
+    const withUrl = { ...config, siteUrl: "https://example.com" } as typeof config;
+    setupNextIntlPrefix(dir, withUrl, "npm", {});
+
+    expect(existsSync(resolve(dir, "i18n/metadata.ts"))).toBe(true);
+    expect(existsSync(resolve(dir, "app/sitemap.ts"))).toBe(true);
+    expect(readFileSync(resolve(dir, "i18n/metadata.ts"), "utf8")).toContain("getAlternates");
+    const sm = readFileSync(resolve(dir, "app/sitemap.ts"), "utf8");
+    expect(sm).toContain("MetadataRoute.Sitemap");
+    expect(sm).toContain('"https://example.com"');
+    expect(sm).toContain('from "../i18n/routing"');
   });
 
   it("writes the [locale] layout template when the project has NO root layout", () => {
@@ -99,7 +117,7 @@ describe("setupNextIntlPrefix (scaffold; default, no --move)", () => {
       `export default function L({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
     );
     try {
-      setupNextIntlPrefix(sdir, config, "npm", {});
+      setupNextIntlPrefix(sdir, { ...config, siteUrl: "https://example.com" } as typeof config, "npm", {});
       // middleware (proxy.ts on Next 16) must be under src/, not the project root.
       expect(existsSync(resolve(sdir, "src/proxy.ts"))).toBe(true);
       expect(existsSync(resolve(sdir, "proxy.ts"))).toBe(false);
@@ -107,6 +125,11 @@ describe("setupNextIntlPrefix (scaffold; default, no --move)", () => {
       expect(readFileSync(resolve(sdir, "src/proxy.ts"), "utf8")).toContain('"../i18n/routing"');
       // i18n still lives at the project root.
       expect(existsSync(resolve(sdir, "i18n/routing.ts"))).toBe(true);
+      // sitemap lives under src/app and reaches root i18n via one more `../`.
+      expect(existsSync(resolve(sdir, "src/app/sitemap.ts"))).toBe(true);
+      expect(readFileSync(resolve(sdir, "src/app/sitemap.ts"), "utf8")).toContain(
+        'from "../../i18n/routing"',
+      );
     } finally {
       rmSync(sdir, { recursive: true, force: true });
     }

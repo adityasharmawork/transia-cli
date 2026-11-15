@@ -64,6 +64,9 @@ export const TransiaConfigSchema = z.object({
   // an app/[locale] segment. Defaults to "cookie" so existing configs are
   // unaffected.
   routing: z.enum(["cookie", "prefix"]).default("cookie"),
+  // Absolute site origin (e.g. "https://example.com"), used to build absolute
+  // hreflang alternate links and sitemap URLs in SEO prefix mode.
+  siteUrl: z.string().url().optional(),
 });
 
 export type TransiaConfig = z.infer<typeof TransiaConfigSchema>;

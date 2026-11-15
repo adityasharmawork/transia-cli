@@ -10,6 +10,8 @@ import {
   middlewareFilename,
   computeMovePlan,
   transformLayoutForPrefix,
+  metadataHelperModule,
+  sitemapModule,
 } from "../../src/setup/next-prefix";
 
 const parses = (src: string) =>
@@ -218,5 +220,32 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       `export default function L({ children }: { children: React.ReactNode }) { return <div>{children}</div>; }`,
     );
     expect(r.wrapped).toBe(false);
+  });
+});
+
+describe("metadataHelperModule", () => {
+  it("builds getAlternates with canonical + per-locale languages + x-default", () => {
+    const src = metadataHelperModule("https://example.com/");
+    expect(src).toContain("export function getAlternates");
+    expect(src).toContain("getPathname({ href: pathname, locale })");
+    expect(src).toContain("routing.locales");
+    expect(src).toContain('"x-default"');
+    // Trailing slash stripped so URLs aren't doubled.
+    expect(src).toContain('"https://example.com"');
+    expect(src).not.toContain('"https://example.com/"');
+    expect(() => parses(src)).not.toThrow();
+  });
+});
+
+describe("sitemapModule", () => {
+  it("emits a localized MetadataRoute.Sitemap with per-entry alternates.languages", () => {
+    const src = sitemapModule("https://example.com", "../i18n/routing", "../i18n/navigation");
+    expect(src).toContain("MetadataRoute.Sitemap");
+    expect(src).toContain("const pathnames");
+    expect(src).toContain("alternates: { languages:");
+    expect(src).toContain('"x-default"');
+    expect(src).toContain('from "../i18n/routing"');
+    expect(src).toContain('from "../i18n/navigation"');
+    expect(() => parses(src)).not.toThrow();
   });
 });
