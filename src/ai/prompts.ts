@@ -53,12 +53,18 @@ export function buildTranslationPrompt(ctx: PromptContext): {
 
   const extras = sections.length > 0 ? "\n\n" + sections.join("\n\n") : "";
 
+  // When an explicit register is configured below, don't also tell the model to
+  // "match the original's formality" — that would contradict the instruction.
+  const toneRule = ctx.formality
+    ? "- Maintain the same tone as the original"
+    : "- Maintain the same tone and formality level as the original";
+
   const system = `You are a professional translator specializing in UI/UX content. Translate the following strings from ${ctx.sourceLocale} to ${ctx.targetLocale}.
 
 Rules:
 - Preserve all placeholders exactly as-is: {name}, {count}, etc.
 - Preserve HTML tags exactly as-is
-- Maintain the same tone and formality level as the original
+${toneRule}
 - Do NOT translate brand names, technical terms, or proper nouns
 - Keep translations natural and culturally appropriate for the target locale
 - Return ONLY a valid JSON object mapping each key to its translated string

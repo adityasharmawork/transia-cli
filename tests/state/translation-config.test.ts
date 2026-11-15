@@ -16,12 +16,14 @@ describe("config translation block", () => {
     const parsed = TransiaConfigSchema.parse({
       ...base,
       translation: {
-        glossary: { "Sign up": "Regístrate" },
+        // glossary is per target locale (terms differ by language)
+        glossary: { es: { "Sign up": "Regístrate" }, fr: { "Sign up": "S'inscrire" } },
         doNotTranslate: ["Transia", "GitHub"],
         formality: "formal",
       },
     });
-    expect(parsed.translation?.glossary?.["Sign up"]).toBe("Regístrate");
+    expect(parsed.translation?.glossary?.es?.["Sign up"]).toBe("Regístrate");
+    expect(parsed.translation?.glossary?.fr?.["Sign up"]).toBe("S'inscrire");
     expect(parsed.translation?.doNotTranslate).toContain("Transia");
     expect(parsed.translation?.formality).toBe("formal");
   });

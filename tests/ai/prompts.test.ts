@@ -32,6 +32,15 @@ describe("buildTranslationPrompt — glossary, do-not-translate, formality", () 
     expect(buildTranslationPrompt(base).system).not.toMatch(/formal register/i);
   });
 
+  it("does not keep the contradictory 'match the original's formality' base rule when formality is set", () => {
+    // base rule still applies when no explicit formality is configured…
+    expect(buildTranslationPrompt(base).system).toMatch(/same tone and formality/i);
+    // …but a configured register must not fight a 'match the original' instruction.
+    expect(buildTranslationPrompt({ ...base, formality: "informal" }).system).not.toMatch(
+      /same tone and formality/i,
+    );
+  });
+
   it("still returns a JSON-only instruction and includes the strings to translate", () => {
     const { system, user } = buildTranslationPrompt(base);
     expect(system).toMatch(/JSON/);

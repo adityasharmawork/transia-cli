@@ -232,7 +232,7 @@ export async function translateCommand(
             })),
             sourceLocale: config.sourceLocale,
             targetLocale: locale,
-            glossary: config.translation?.glossary,
+            glossary: config.translation?.glossary?.[locale],
             doNotTranslate: config.translation?.doNotTranslate,
             formality: config.translation?.formality,
           };

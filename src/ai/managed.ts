@@ -42,6 +42,11 @@ export class ManagedProvider implements AIProvider {
           strings: request.strings,
           sourceLocale: request.sourceLocale,
           targetLocale: request.targetLocale,
+          // Forward the translation controls so managed mode honors them once the
+          // server applies them (it ignores unknown fields until then).
+          glossary: request.glossary,
+          doNotTranslate: request.doNotTranslate,
+          formality: request.formality,
         },
       },
     );
