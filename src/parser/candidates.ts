@@ -32,6 +32,10 @@ export interface Candidate {
   attribute?: string;
   /** For jsx-attr: true when the value was ALREADY in `{...}` (e.g. title={"x"}). */
   attrExpressionContainer?: boolean;
+  /** Nearest enclosing JSX element's tag name (undefined for fragments/member/namespaced). */
+  elementName?: string;
+  /** Auto-derived role hint for the prompt (e.g. "button label", "image alt text"), or undefined. */
+  autoContext?: string;
   /** True if the string is an operand of a comparison (===, !==, <, > ...). */
   insideComparison: boolean;
   /** Nearest enclosing call callee name (e.g. "cn", "clsx", "t"). */
@@ -42,7 +46,7 @@ export interface Candidate {
   hash: string;
   /** Stable id of the enclosing component function (start offset as string). */
   componentPath: string;
-  /** transia-context comment for the file, if any. */
+  /** Nearest-preceding `transia-context` comment (in source order), if any. */
   context: string | null;
   /** 1-based source line. */
   line: number;
@@ -52,13 +56,121 @@ export interface Candidate {
 
 const COMPARISON_OPERATORS = new Set(["==", "===", "!=", "!==", "<", ">", "<=", ">="]);
 
-function extractTransiaContext(comments?: Comment[] | null): string | null {
-  if (!comments) return null;
+/**
+ * Role hints derived from a string's syntactic position, passed to the LLM as
+ * per-string context. We emit a hint only for high-signal positions — a button
+ * label, a heading, an alt text translate differently from prose — and stay
+ * silent for generic containers (p/span/div) and custom components, so we never
+ * pay prompt tokens for noise. These hints only reach the prompt (and state
+ * metadata); they never influence the apply edit or the content hash.
+ */
+const ELEMENT_CONTEXT: Record<string, string> = {
+  button: "button label",
+  a: "link text",
+  h1: "heading",
+  h2: "heading",
+  h3: "heading",
+  h4: "heading",
+  h5: "heading",
+  h6: "heading",
+  label: "form field label",
+  option: "dropdown option",
+  th: "table column header",
+  summary: "expandable section summary",
+  figcaption: "image caption",
+  legend: "fieldset legend",
+};
+
+const ATTR_CONTEXT: Record<string, string> = {
+  alt: "image alt text",
+  placeholder: "input placeholder text",
+  title: "tooltip / title text",
+  label: "label",
+  "aria-label": "accessibility label (screen reader)",
+  "aria-description": "accessibility description (screen reader)",
+  "aria-roledescription": "accessibility role description (screen reader)",
+  "aria-placeholder": "accessibility placeholder (screen reader)",
+};
+
+/** The nearest enclosing JSX element's tag name, or undefined. */
+function enclosingElementName(path: any): string | undefined {
+  let current = path;
+  while (current) {
+    if (current.node?.type === "JSXElement") {
+      const nameNode = current.node.openingElement?.name;
+      if (nameNode?.type === "JSXIdentifier" && typeof nameNode.name === "string") {
+        return nameNode.name;
+      }
+      return undefined; // member-expression / namespaced names carry no HTML role
+    }
+    current = current.parentPath;
+  }
+  return undefined;
+}
+
+/** Map (role, attribute, elementName) to a short role hint, or undefined when none fits. */
+function deriveAutoContext(
+  role: CandidateRole,
+  attribute: string | undefined,
+  elementName: string | undefined,
+): string | undefined {
+  if (role === "jsx-attr" && attribute) {
+    return ATTR_CONTEXT[attribute.toLowerCase()];
+  }
+  if (elementName) return ELEMENT_CONTEXT[elementName];
+  return undefined;
+}
+
+interface ContextComment {
+  line: number;
+  column: number;
+  text: string;
+}
+
+/**
+ * Collect EVERY `transia-context:` comment in the file with its source
+ * position, sorted in source order (line, then column). A string then takes the
+ * nearest comment that precedes it in source order (see resolveExplicitContext),
+ * so an author can scope context per section instead of one directive for the
+ * whole file.
+ */
+function collectContextComments(comments?: Comment[] | null): ContextComment[] {
+  const out: ContextComment[] = [];
+  if (!comments) return out;
   for (const comment of comments) {
     const match = comment.value.match(/transia-context:\s*(.+)/);
-    if (match) return match[1].trim();
+    if (match) {
+      out.push({
+        line: comment.loc?.start.line ?? 0,
+        column: comment.loc?.start.column ?? 0,
+        text: match[1].trim(),
+      });
+    }
   }
-  return null;
+  out.sort((a, b) => a.line - b.line || a.column - b.column);
+  return out;
+}
+
+/**
+ * The explicit context for a string at (`line`, `column`): the text of the last
+ * `transia-context` comment that precedes the string in source order (an earlier
+ * line, or the same line at an earlier-or-equal column), or null if none
+ * precedes it. A directive therefore applies to what comes AFTER it — a comment
+ * sitting to the right of a string on the same line does not back-fill that
+ * string. A top-of-file comment still applies to everything after it.
+ */
+function resolveExplicitContext(
+  line: number,
+  column: number,
+  comments: ContextComment[],
+): string | null {
+  let found: string | null = null;
+  for (const c of comments) {
+    const precedes = c.line < line || (c.line === line && c.column <= column);
+    if (precedes) found = c.text;
+    else break;
+  }
+  return found;
 }
 
 function isInsideJSX(path: any): boolean {
@@ -211,7 +323,7 @@ export function recordCandidates(source: string, filePath: string): Candidate[] 
     return candidates;
   }
 
-  const fileContext = ast.comments ? extractTransiaContext(ast.comments) : null;
+  const contextComments = collectContextComments(ast.comments);
 
   function record(
     start: number,
@@ -229,7 +341,10 @@ export function recordCandidates(source: string, filePath: string): Candidate[] 
     if (!isTranslatableString(trimmed)) return;
 
     const line = path.node.loc?.start.line ?? 0;
+    const column = path.node.loc?.start.column ?? 0;
     const { sanitized } = sanitizeForPrompt(trimmed, `${filePath}:${line}`);
+
+    const elementName = enclosingElementName(path);
 
     candidates.push({
       start,
@@ -237,12 +352,14 @@ export function recordCandidates(source: string, filePath: string): Candidate[] 
       role,
       attribute: extra.attribute,
       attrExpressionContainer: extra.attrExpressionContainer,
+      elementName,
+      autoContext: deriveAutoContext(role, extra.attribute, elementName),
       insideComparison: detectInsideComparison(path),
       insideCall: enclosingCallName(path),
       sanitized,
       hash: hashString(sanitized),
       componentPath: enclosingComponentPath(path),
-      context: fileContext,
+      context: resolveExplicitContext(line, column, contextComments),
       line,
       interpolations: extra.interpolations,
     });
