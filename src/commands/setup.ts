@@ -31,6 +31,8 @@ import {
   middlewareFilename,
   computeMovePlan,
   transformLayoutForPrefix,
+  metadataHelperModule,
+  sitemapModule,
 } from "../setup/next-prefix.js";
 import { safeWriteFile } from "../transform/safe-write.js";
 
@@ -555,6 +557,30 @@ export function setupNextIntlPrefix(
   }
 
   const appAbs = resolve(projectRoot, appDirRel);
+
+  // 5b. hreflang helper + localized sitemap (needs an absolute origin).
+  if (config.siteUrl) {
+    writeNew(
+      resolve(i18nDir, "metadata.ts"),
+      metadataHelperModule(config.siteUrl),
+      "i18n/metadata.ts",
+    );
+    const sitemapImportBase = srcApp ? "../../i18n" : "../i18n";
+    const sitemapPath = resolve(appAbs, "sitemap.ts");
+    if (existsSync(sitemapPath)) {
+      skipped.push(`${appDirRel}/sitemap.ts exists — add per-locale alternates.languages yourself.`);
+    } else {
+      writeNew(
+        sitemapPath,
+        sitemapModule(config.siteUrl, `${sitemapImportBase}/routing`, `${sitemapImportBase}/navigation`),
+        `${appDirRel}/sitemap.ts`,
+      );
+    }
+  } else {
+    skipped.push(
+      'Set "siteUrl" in transia.config.json to generate a localized sitemap + an hreflang getAlternates() helper.',
+    );
+  }
 
   // 6a. --move: guarded automated restructure (transforms the real root layout).
   if (options.move) {
