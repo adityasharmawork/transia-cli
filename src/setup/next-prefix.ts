@@ -9,6 +9,35 @@
 
 export type LocalePrefix = "as-needed" | "always";
 
+/**
+ * Parse the Next.js major version from a parsed package.json's dependencies,
+ * or null when `next` is absent or its spec has no leading number (e.g.
+ * "latest", "canary", a workspace ref). Pure for testability; the fs read lives
+ * in the setup command.
+ */
+export function nextMajorFromPackage(pkg: unknown): number | null {
+  if (!pkg || typeof pkg !== "object") return null;
+  const record = pkg as Record<string, unknown>;
+  const deps = {
+    ...(record.dependencies as Record<string, string> | undefined),
+    ...(record.devDependencies as Record<string, string> | undefined),
+  };
+  const spec = deps.next;
+  if (typeof spec !== "string") return null;
+  const match = spec.match(/\d+/);
+  return match ? parseInt(match[0], 10) : null;
+}
+
+/**
+ * Next 16 renamed `middleware.ts` -> `proxy.ts` (middleware still works but is
+ * deprecated). Emit proxy.ts for Next >=16; middleware.ts for 15 and earlier, or
+ * when the version is unknown (middleware.ts works on 16 too, so it is the safe
+ * default).
+ */
+export function middlewareFilename(nextMajor: number | null): "middleware.ts" | "proxy.ts" {
+  return nextMajor !== null && nextMajor >= 16 ? "proxy.ts" : "middleware.ts";
+}
+
 /** Source for `i18n/routing.ts`. */
 export function routingModule(
   sourceLocale: string,

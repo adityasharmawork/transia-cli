@@ -6,6 +6,8 @@ import {
   prefixRequestConfig,
   middlewareSource,
   localeLayoutTemplate,
+  nextMajorFromPackage,
+  middlewareFilename,
 } from "../../src/setup/next-prefix";
 
 const parses = (src: string) =>
@@ -54,5 +56,28 @@ describe("next-prefix generators", () => {
     expect(src).toContain("<html lang={locale}>");
     expect(src).toContain("NextIntlClientProvider");
     expect(() => parses(src)).not.toThrow();
+  });
+});
+
+describe("Next version detection", () => {
+  it("reads the major from a caret range in dependencies", () => {
+    expect(nextMajorFromPackage({ dependencies: { next: "^16.1.6" } })).toBe(16);
+  });
+
+  it("reads from devDependencies and plain versions (15.5 is still 15)", () => {
+    expect(nextMajorFromPackage({ devDependencies: { next: "15.5.0" } })).toBe(15);
+  });
+
+  it("returns null when next is absent or non-numeric", () => {
+    expect(nextMajorFromPackage({ dependencies: {} })).toBeNull();
+    expect(nextMajorFromPackage({ dependencies: { next: "latest" } })).toBeNull();
+    expect(nextMajorFromPackage(null)).toBeNull();
+  });
+
+  it("picks proxy.ts for Next >=16, middleware.ts otherwise (incl. unknown)", () => {
+    expect(middlewareFilename(16)).toBe("proxy.ts");
+    expect(middlewareFilename(17)).toBe("proxy.ts");
+    expect(middlewareFilename(15)).toBe("middleware.ts");
+    expect(middlewareFilename(null)).toBe("middleware.ts");
   });
 });
