@@ -7,6 +7,14 @@
  * the setup command; these functions only produce file contents.
  */
 
+import { parse } from "@babel/parser";
+import { createRequire } from "node:module";
+import { buildEdit, type Insertion, type Edit } from "../transform/safe-write.js";
+import { planImports } from "../transform/hooks.js";
+
+const require = createRequire(import.meta.url);
+const traverse = require("@babel/traverse").default ?? require("@babel/traverse");
+
 export type LocalePrefix = "as-needed" | "always";
 
 /**
@@ -213,4 +221,212 @@ export default async function LocaleLayout({
   );
 }
 `;
+}
+
+// --- Transform an existing root layout into a [locale] layout (for --move) ---
+
+export type LayoutWrapResult =
+  | { output: string; wrapped: true }
+  | { wrapped: false; reason: string };
+
+function parseModule(source: string) {
+  return parse(source, {
+    sourceType: "module",
+    plugins: ["jsx", "typescript", "decorators-legacy"],
+    errorRecovery: true,
+  });
+}
+
+/**
+ * Transform a Next.js App Router root layout (being moved to app/[locale]/) into
+ * a next-intl prefix-mode layout: read `locale` from `params`, validate it
+ * (`hasLocale` -> `notFound()`), call `setRequestLocale`, set `<html
+ * lang={locale}>`, wrap <body> children in <NextIntlClientProvider>, and add
+ * `generateStaticParams`. Edits are surgical (magic-string) and the result is
+ * re-parsed; any shape it can't confidently rewrite returns `wrapped:false` so
+ * the caller can fall back to the generated template or a manual note instead of
+ * risking the user's file.
+ */
+export function transformLayoutForPrefix(
+  source: string,
+  routingImport = "../../i18n/routing",
+): LayoutWrapResult {
+  if (source.includes("NextIntlClientProvider")) {
+    return { wrapped: false, reason: "layout already uses NextIntlClientProvider" };
+  }
+
+  let ast;
+  try {
+    ast = parseModule(source);
+  } catch {
+    return { wrapped: false, reason: "could not parse the layout file" };
+  }
+
+  const directives = (ast.program as any).directives ?? [];
+  if (directives.some((d: any) => d.value?.value === "use client")) {
+    return {
+      wrapped: false,
+      reason:
+        'the root layout is a "use client" component; keep it a server component so the locale segment and getMessages work, then adapt it manually',
+    };
+  }
+
+  // Locate the default-exported component function and the export statement.
+  let fnNode: any = null;
+  let exportStart: number | null = null;
+  traverse(ast, {
+    ExportDefaultDeclaration(path: any) {
+      const d = path.node.declaration;
+      if (d?.type === "FunctionDeclaration") {
+        fnNode = d;
+        exportStart = path.node.start;
+      } else if (d?.type === "Identifier") {
+        const binding = path.scope.getBinding(d.name);
+        const n = binding?.path?.node;
+        if (n?.type === "FunctionDeclaration") {
+          fnNode = n;
+          exportStart = path.node.start;
+        } else if (
+          n?.type === "VariableDeclarator" &&
+          (n.init?.type === "ArrowFunctionExpression" ||
+            n.init?.type === "FunctionExpression")
+        ) {
+          fnNode = n.init;
+          exportStart = path.node.start;
+        }
+      }
+    },
+  });
+  if (!fnNode || exportStart === null) {
+    return { wrapped: false, reason: "no default-exported layout function found" };
+  }
+  if (fnNode.body?.type !== "BlockStatement") {
+    return { wrapped: false, reason: "layout body is not a block statement" };
+  }
+
+  // The first param must be the `{ children }` object pattern so we can add `params`.
+  const prop = fnNode.params?.[0];
+  if (!prop || prop.type !== "ObjectPattern") {
+    return { wrapped: false, reason: "layout props are not a { children } object pattern" };
+  }
+
+  // Find <html> and <body> inside the component.
+  let htmlOpen: any = null;
+  let bodyEl: any = null;
+  traverse(ast, {
+    JSXElement(path: any) {
+      if (path.node.start < fnNode.start || path.node.end > fnNode.end) return;
+      const name = path.node.openingElement?.name;
+      const tag = name?.type === "JSXIdentifier" ? name.name : null;
+      if (tag === "html") htmlOpen = path.node.openingElement;
+      if (tag === "body") bodyEl = path.node;
+    },
+  });
+  if (!htmlOpen || !bodyEl) {
+    return { wrapped: false, reason: "layout does not render <html> and <body>" };
+  }
+  if (!bodyEl.closingElement) {
+    return { wrapped: false, reason: "<body> is self-closing" };
+  }
+
+  const insertions: Insertion[] = [];
+  const edits: Edit[] = [];
+
+  // Make the component async.
+  if (!fnNode.async) insertions.push({ pos: fnNode.start, text: "async " });
+
+  // Add `params` to the BINDING pattern. Note: a typed pattern's `end` extends
+  // past its type annotation, so we anchor on the last binding property (not
+  // prop.end) to land inside `{ children }`, not inside the type literal.
+  const bindingProps = prop.properties ?? [];
+  if (bindingProps.length > 0) {
+    insertions.push({ pos: bindingProps[bindingProps.length - 1].end, text: ", params" });
+  } else {
+    insertions.push({ pos: prop.start + 1, text: " params " });
+  }
+
+  // Extend the props type, if present: `{ children: ... }` or `Readonly<{ ... }>`.
+  if (prop.typeAnnotation?.type === "TSTypeAnnotation") {
+    const t = prop.typeAnnotation.typeAnnotation;
+    let literal: any = null;
+    if (t.type === "TSTypeLiteral") {
+      literal = t;
+    } else if (t.type === "TSTypeReference") {
+      const args = t.typeParameters ?? t.typeArguments;
+      if (args?.params?.[0]?.type === "TSTypeLiteral") literal = args.params[0];
+    }
+    if (!literal) {
+      return {
+        wrapped: false,
+        reason: "could not extend the layout props type for the locale param",
+      };
+    }
+    insertions.push({ pos: literal.end - 1, text: "; params: Promise<{ locale: string }> " });
+  }
+
+  // Read + validate the locale at the top of the body.
+  insertions.push({
+    pos: fnNode.body.start + 1,
+    text:
+      "\n  const { locale } = await params;" +
+      "\n  if (!hasLocale(routing.locales, locale)) {\n    notFound();\n  }" +
+      "\n  setRequestLocale(locale);" +
+      "\n  const messages = await getMessages();",
+  });
+
+  // Set <html lang={locale}>.
+  const langAttr = htmlOpen.attributes?.find(
+    (a: any) => a.type === "JSXAttribute" && a.name?.name === "lang",
+  );
+  if (langAttr) {
+    edits.push({ start: langAttr.start, end: langAttr.end, replacement: "lang={locale}" });
+  } else {
+    insertions.push({ pos: htmlOpen.end - 1, text: " lang={locale}" });
+  }
+
+  // Wrap <body> children in the provider.
+  insertions.push({
+    pos: bodyEl.openingElement.end,
+    text: "<NextIntlClientProvider messages={messages}>",
+  });
+  insertions.push({
+    pos: bodyEl.closingElement.start,
+    text: "</NextIntlClientProvider>",
+  });
+
+  // Add generateStaticParams before the default export.
+  insertions.push({
+    pos: exportStart,
+    text:
+      "export function generateStaticParams() {\n" +
+      "  return routing.locales.map((locale) => ({ locale }));\n" +
+      "}\n\n",
+  });
+
+  // Imports.
+  insertions.push(
+    ...planImports(source, [
+      { module: "next-intl", name: "NextIntlClientProvider" },
+      { module: "next-intl", name: "hasLocale" },
+      { module: "next-intl/server", name: "getMessages" },
+      { module: "next-intl/server", name: "setRequestLocale" },
+      { module: "next/navigation", name: "notFound" },
+      { module: routingImport, name: "routing" },
+    ]),
+  );
+
+  let output: string;
+  try {
+    output = buildEdit(source, edits, insertions);
+  } catch {
+    return { wrapped: false, reason: "could not build the layout transform (overlap)" };
+  }
+
+  try {
+    parse(output, { sourceType: "module", plugins: ["jsx", "typescript", "decorators-legacy"] });
+  } catch {
+    return { wrapped: false, reason: "transform produced invalid output" };
+  }
+
+  return { output, wrapped: true };
 }

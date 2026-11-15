@@ -9,6 +9,7 @@ import {
   nextMajorFromPackage,
   middlewareFilename,
   computeMovePlan,
+  transformLayoutForPrefix,
 } from "../../src/setup/next-prefix";
 
 const parses = (src: string) =>
@@ -139,5 +140,64 @@ describe("computeMovePlan", () => {
       from: "src/app/page.tsx",
       to: "src/app/[locale]/page.tsx",
     });
+  });
+});
+
+describe("transformLayoutForPrefix", () => {
+  const base = `import "./globals.css";
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  );
+}`;
+
+  it("turns a standard root layout into a [locale] layout", () => {
+    const r = transformLayoutForPrefix(base);
+    expect(r.wrapped).toBe(true);
+    if (!r.wrapped) return;
+    const out = r.output;
+    expect(out).toContain("async function RootLayout");
+    // params must be bound in the destructure (not only present in the type).
+    expect(out).toMatch(/\{\s*children\s*,\s*params\b/);
+    expect(out).toContain("await params");
+    expect(out).toContain("params: Promise<{ locale: string }>");
+    expect(out).toContain("hasLocale(routing.locales, locale)");
+    expect(out).toContain("notFound()");
+    expect(out).toContain("setRequestLocale(locale)");
+    expect(out).toContain("lang={locale}");
+    expect(out).toContain("NextIntlClientProvider");
+    expect(out).toContain("generateStaticParams");
+    expect(() => parses(out)).not.toThrow();
+  });
+
+  it("handles a Readonly<{ children }> prop type and still produces valid TSX", () => {
+    const src = `export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  return (
+    <html>
+      <body>{children}</body>
+    </html>
+  );
+}`;
+    const r = transformLayoutForPrefix(src);
+    expect(r.wrapped).toBe(true);
+    if (r.wrapped) {
+      expect(r.output).toContain("lang={locale}");
+      expect(() => parses(r.output)).not.toThrow();
+    }
+  });
+
+  it('refuses a "use client" layout', () => {
+    const r = transformLayoutForPrefix(`"use client";\n${base}`);
+    expect(r.wrapped).toBe(false);
+  });
+
+  it("refuses when there is no <html>/<body>", () => {
+    const r = transformLayoutForPrefix(
+      `export default function L({ children }: { children: React.ReactNode }) { return <div>{children}</div>; }`,
+    );
+    expect(r.wrapped).toBe(false);
   });
 });
