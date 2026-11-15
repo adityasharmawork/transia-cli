@@ -170,6 +170,11 @@ program
   .description(
     "Auto-configure i18n library (next-intl or i18next) in your project",
   )
+  .option("--seo", "Next.js: use SEO URL-prefix routing (/es/...) instead of cookie mode")
+  .option(
+    "--move",
+    "With --seo: automatically move routes under app/[locale] (clean git tree required; auto-rolls-back if next build fails)",
+  )
   .option("-v, --verbose", "Enable debug logging")
   .action(async (options) => {
     try {

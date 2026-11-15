@@ -5,6 +5,8 @@ import {
   mkdirSync,
   copyFileSync,
   unlinkSync,
+  readdirSync,
+  rmSync,
 } from "node:fs";
 import { resolve, relative, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -19,10 +21,25 @@ import {
   wrapLayoutForNextIntl,
   addNextIntlPlugin,
 } from "../setup/next-cookie.js";
+import {
+  routingModule,
+  navigationModule,
+  prefixRequestConfig,
+  middlewareSource,
+  localeLayoutTemplate,
+  nextMajorFromPackage,
+  middlewareFilename,
+  computeMovePlan,
+  transformLayoutForPrefix,
+} from "../setup/next-prefix.js";
 import { safeWriteFile } from "../transform/safe-write.js";
 
 interface SetupOptions {
   verbose?: boolean;
+  /** Next.js: use SEO URL-prefix routing instead of cookie mode. */
+  seo?: boolean;
+  /** With seo: automatically move routes under app/[locale] (guarded). */
+  move?: boolean;
 }
 
 /**
@@ -230,6 +247,330 @@ function setupNextIntl(
     }
   } else {
     skipped.push("next.config not found — add the next-intl plugin manually.");
+  }
+
+  return { installed, created, skipped };
+}
+
+// --- Next.js + next-intl SEO prefix-mode setup ---
+
+function git(projectRoot: string, args: string[]): string {
+  return execFileSync("git", args, { cwd: projectRoot, encoding: "utf-8" });
+}
+
+function isCleanGitTree(projectRoot: string): boolean {
+  try {
+    return git(projectRoot, ["status", "--porcelain"]).trim() === "";
+  } catch {
+    return false; // not a git repo (or git missing) — we need git for rollback
+  }
+}
+
+function hasPathAlias(projectRoot: string): boolean {
+  for (const name of ["tsconfig.json", "jsconfig.json"]) {
+    const p = resolve(projectRoot, name);
+    if (!existsSync(p)) continue;
+    try {
+      const json = JSON.parse(readFileSync(p, "utf-8"));
+      const paths = json?.compilerOptions?.paths;
+      if (paths && Object.keys(paths).some((k) => k.startsWith("@/"))) return true;
+    } catch {
+      // ignore malformed tsconfig
+    }
+  }
+  return false;
+}
+
+/**
+ * Default runBuild: run the project's Next.js build. Returns true on success.
+ * Injected in tests (a real `next build` can't run against a fixture).
+ */
+function runNextBuild(projectRoot: string, pm: "pnpm" | "yarn" | "npm", verbose: boolean): boolean {
+  const args = pm === "npm" ? ["run", "build"] : ["build"];
+  try {
+    execFileSync(pm, args, { cwd: projectRoot, stdio: verbose ? "inherit" : "pipe" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Guarded automated move of routes under app/[locale]/ (opt-in `--move`).
+ * Requires a clean git tree, executes the move plan, transforms the moved root
+ * layout, verifies with `next build`, and rolls everything back via git if the
+ * build fails. Relative-import breakage (projects without a `@/*` alias) is
+ * caught by the build-verify + rollback rather than rewritten.
+ */
+function runGuardedMove(
+  projectRoot: string,
+  appDirRel: string,
+  layoutRoutingImport: string,
+  scaffoldArtifacts: string[],
+  runBuild: (projectRoot: string) => boolean,
+): { created: string[]; skipped: string[] } {
+  const created: string[] = [];
+  const skipped: string[] = [];
+
+  const appAbs = resolve(projectRoot, appDirRel);
+  const entries = readdirSync(appAbs, { withFileTypes: true }).map((d) => ({
+    name: d.name,
+    isDir: d.isDirectory(),
+  }));
+  const plan = computeMovePlan(entries, appDirRel);
+  if (plan.move.length === 0) {
+    skipped.push(`${appDirRel} has nothing to move under [locale].`);
+    return { created, skipped };
+  }
+
+  if (!hasPathAlias(projectRoot)) {
+    skipped.push(
+      "No `@/*` path alias detected — relative imports may break when files move. If `next build` fails, the move is rolled back automatically; then use the guided (non---move) steps.",
+    );
+  }
+
+  const localeDir = resolve(appAbs, "[locale]");
+
+  const rollback = (): void => {
+    try {
+      git(projectRoot, ["reset", "--hard", "HEAD"]);
+    } catch {
+      /* best effort */
+    }
+    // Remove untracked scaffold artifacts and the (now re-emptied) [locale] dir.
+    for (const p of scaffoldArtifacts) {
+      try {
+        rmSync(p, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      git(projectRoot, ["clean", "-fdq", "--", `${appDirRel}/[locale]`]);
+    } catch {
+      /* ignore */
+    }
+    rmSync(localeDir, { recursive: true, force: true });
+  };
+
+  try {
+    mkdirSync(localeDir, { recursive: true });
+    for (const m of plan.moves) {
+      git(projectRoot, ["mv", m.from, m.to]);
+    }
+
+    // Transform the moved root layout into a [locale] layout.
+    const movedLayout = ["layout.tsx", "layout.jsx"]
+      .map((n) => resolve(localeDir, n))
+      .find((p) => existsSync(p));
+    if (movedLayout) {
+      const result = transformLayoutForPrefix(readFileSync(movedLayout, "utf-8"), layoutRoutingImport);
+      if (result.wrapped) {
+        writeFileSync(movedLayout, result.output, "utf-8");
+        created.push(`${appDirRel}/[locale]/${movedLayout.endsWith(".jsx") ? "layout.jsx" : "layout.tsx"} (moved + adapted for next-intl)`);
+      } else {
+        skipped.push(
+          `${appDirRel}/[locale]/layout — ${result.reason}. Adapt it for next-intl (read locale from params, set <html lang>, wrap with NextIntlClientProvider).`,
+        );
+      }
+    } else {
+      // No root layout existed; drop in the template so [locale] has one.
+      const layoutPath = resolve(localeDir, "layout.tsx");
+      writeFileSync(layoutPath, localeLayoutTemplate(layoutRoutingImport), "utf-8");
+      created.push(`${appDirRel}/[locale]/layout.tsx`);
+    }
+
+    if (!runBuild(projectRoot)) {
+      rollback();
+      throw new TransiaError(
+        ExitCode.GENERAL_ERROR,
+        "`next build` failed after the move — rolled everything back. Use `transia setup --seo` (without --move) and follow the guided checklist.",
+      );
+    }
+
+    created.push(`${appDirRel}/[locale]/ (routes moved: ${plan.move.join(", ")})`);
+    return { created, skipped };
+  } catch (error) {
+    if (error instanceof TransiaError) throw error;
+    rollback();
+    throw new TransiaError(
+      ExitCode.GENERAL_ERROR,
+      `The move failed and was rolled back: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+/**
+ * next-intl SEO prefix-mode setup: scaffold routing/navigation/request +
+ * middleware(proxy) + an app/[locale] layout, add the next-intl plugin, and
+ * either print a guided move checklist (default) or perform the guarded
+ * automated move (`--move`). The default path never moves routes or clobbers
+ * existing files.
+ */
+export function setupNextIntlPrefix(
+  projectRoot: string,
+  config: import("../state/schema.js").TransiaConfig,
+  pm: "pnpm" | "yarn" | "npm",
+  options: SetupOptions,
+  runBuild?: (projectRoot: string) => boolean,
+): { installed: string[]; created: string[]; skipped: string[] } {
+  const installed: string[] = [];
+  const created: string[] = [];
+  const skipped: string[] = [];
+  const allLocales = [config.sourceLocale, ...config.targetLocales];
+
+  // --move preconditions, checked BEFORE any writes so the clean-tree gate is
+  // meaningful and rollback (`git reset --hard`) can't uninstall dependencies.
+  if (options.move) {
+    if (!isInstalled(projectRoot, "next-intl")) {
+      throw new TransiaError(
+        ExitCode.CONFIG_ERROR,
+        "--move needs next-intl already installed. Run `transia setup --seo` first (installs + scaffolds), then re-run with --move.",
+      );
+    }
+    if (!isCleanGitTree(projectRoot)) {
+      throw new TransiaError(
+        ExitCode.GENERAL_ERROR,
+        "--move needs a clean git tree (so it can roll back). Commit or stash your changes and re-run.",
+      );
+    }
+  }
+
+  // 1. Install next-intl if needed.
+  if (!isInstalled(projectRoot, "next-intl")) {
+    const spinner = ora("Installing next-intl...").start();
+    try {
+      runInstall(pm, ["next-intl"], projectRoot, !!options.verbose);
+      spinner.succeed("Installed next-intl");
+      installed.push("next-intl");
+    } catch (error) {
+      spinner.fail("Failed to install next-intl");
+      throw new TransiaError(
+        ExitCode.GENERAL_ERROR,
+        `Failed to install next-intl: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  } else {
+    logger.info("next-intl already installed, skipping.");
+  }
+
+  // Next major -> middleware.ts vs proxy.ts; app under src/?
+  let nextMajor: number | null = null;
+  try {
+    nextMajor = nextMajorFromPackage(
+      JSON.parse(readFileSync(resolve(projectRoot, "package.json"), "utf-8")),
+    );
+  } catch {
+    nextMajor = null;
+  }
+  const mwFile = middlewareFilename(nextMajor);
+  const srcApp = existsSync(resolve(projectRoot, "src", "app"));
+  const appDirRel = srcApp ? "src/app" : "app";
+  const layoutRoutingImport = srcApp ? "../../../i18n/routing" : "../../i18n/routing";
+
+  const artifacts: string[] = [];
+  const writeNew = (absPath: string, contents: string, label: string): void => {
+    if (existsSync(absPath)) return;
+    mkdirSync(dirname(absPath), { recursive: true });
+    writeFileSync(absPath, contents, "utf-8");
+    created.push(label);
+    artifacts.push(absPath);
+  };
+
+  // 2. i18n modules at <root>/i18n.
+  const i18nDir = resolve(projectRoot, "i18n");
+  writeNew(
+    resolve(i18nDir, "routing.ts"),
+    routingModule(config.sourceLocale, allLocales, "as-needed"),
+    "i18n/routing.ts",
+  );
+  writeNew(resolve(i18nDir, "navigation.ts"), navigationModule(), "i18n/navigation.ts");
+  const requestPath = resolve(i18nDir, "request.ts");
+  if (!existsSync(requestPath)) {
+    writeNew(requestPath, prefixRequestConfig(config.output.path), "i18n/request.ts");
+  } else {
+    skipped.push("i18n/request.ts exists — ensure it reads `requestLocale` (prefix mode), not a cookie.");
+  }
+
+  // 3. middleware.ts (Next <=15) / proxy.ts (Next >=16) at the project root.
+  const mwPath = resolve(projectRoot, mwFile);
+  const otherMw = resolve(projectRoot, mwFile === "proxy.ts" ? "middleware.ts" : "proxy.ts");
+  if (!existsSync(mwPath) && !existsSync(otherMw)) {
+    writeFileSync(mwPath, middlewareSource("./i18n/routing"), "utf-8");
+    created.push(mwFile);
+    artifacts.push(mwPath);
+  } else {
+    skipped.push(`${mwFile} (or an existing middleware/proxy) — ensure it calls createMiddleware(routing).`);
+  }
+
+  // 4. messages dir + source-locale JSON.
+  const messagesDir = resolve(projectRoot, config.output.path);
+  mkdirSync(messagesDir, { recursive: true });
+  const sourceLocalePath = resolve(messagesDir, `${config.sourceLocale}.json`);
+  if (!existsSync(sourceLocalePath)) {
+    writeFileSync(sourceLocalePath, "{}\n", "utf-8");
+    created.push(`${config.output.path}/${config.sourceLocale}.json`);
+    artifacts.push(sourceLocalePath);
+  }
+
+  // 5. next.config: add the next-intl plugin.
+  const nextConfigPath = findNextConfig(projectRoot);
+  if (nextConfigPath) {
+    const current = readFileSync(nextConfigPath, "utf-8");
+    const r = addNextIntlPlugin(current);
+    if (r.changed) {
+      const outcome = safeWriteFile(nextConfigPath, r.output, {
+        backupPath: resolve(projectRoot, ".transia-backup", "next-config", relative(projectRoot, nextConfigPath)),
+      });
+      if (outcome === "written") {
+        created.push(`${relative(projectRoot, nextConfigPath)} (next-intl plugin added)`);
+      }
+    } else if (!current.includes("next-intl/plugin")) {
+      skipped.push(
+        `${relative(projectRoot, nextConfigPath)} — wrap your config in createNextIntlPlugin("./i18n/request.ts") manually.`,
+      );
+    }
+  } else {
+    skipped.push("next.config not found — add the next-intl plugin manually.");
+  }
+
+  const appAbs = resolve(projectRoot, appDirRel);
+
+  // 6a. --move: guarded automated restructure (transforms the real root layout).
+  if (options.move) {
+    if (!existsSync(appAbs)) {
+      skipped.push(`${appDirRel} not found — nothing to move.`);
+      return { installed, created, skipped };
+    }
+    const build = runBuild ?? ((root: string) => runNextBuild(root, pm, !!options.verbose));
+    const moveResult = runGuardedMove(projectRoot, appDirRel, layoutRoutingImport, artifacts, build);
+    created.push(...moveResult.created);
+    skipped.push(...moveResult.skipped);
+    return { installed, created, skipped };
+  }
+
+  // 6b. Default (no --move): write the [locale] layout template iff absent and
+  //     print the guided move checklist. Never move routes, never clobber.
+  writeNew(
+    resolve(appAbs, "[locale]", "layout.tsx"),
+    localeLayoutTemplate(layoutRoutingImport),
+    `${appDirRel}/[locale]/layout.tsx`,
+  );
+
+  if (existsSync(appAbs)) {
+    const entries = readdirSync(appAbs, { withFileTypes: true }).map((d) => ({
+      name: d.name,
+      isDir: d.isDirectory(),
+    }));
+    const plan = computeMovePlan(entries, appDirRel);
+    if (plan.move.length > 0) {
+      skipped.push(
+        "To finish prefix routing, move your routes under [locale] (commit/clean first), then run `next build`:\n" +
+          plan.gitMvCommands.map((c) => "      " + c).join("\n") +
+          "\n      Then move providers/fonts from the old root layout into app/[locale]/layout.tsx." +
+          "\n      (or re-run `transia setup --seo --move` to do this automatically with a build-verify rollback)",
+      );
+    }
   }
 
   return { installed, created, skipped };
@@ -443,8 +784,15 @@ export async function setupCommand(
 
   let result: { installed: string[]; created: string[]; skipped: string[] };
 
+  const usePrefix = options.seo || config.routing === "prefix";
   if (config.output.format === "next-intl") {
-    result = setupNextIntl(projectRoot, config, pm, options);
+    if (usePrefix) {
+      console.log(`  ${chalk.dim("Routing:")}  SEO URL-prefix mode (/es/...)`);
+      console.log("");
+    }
+    result = usePrefix
+      ? setupNextIntlPrefix(projectRoot, config, pm, options)
+      : setupNextIntl(projectRoot, config, pm, options);
   } else {
     result = setupI18next(projectRoot, config, pm, options);
   }
