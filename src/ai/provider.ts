@@ -1,10 +1,32 @@
 import { TransiaError, ExitCode } from "../utils/errors.js";
 import { getDetectedProvider } from "../utils/keys.js";
+import { buildTranslationPrompt } from "./prompts.js";
 
 export interface TranslationRequest {
   strings: Array<{ key: string; original: string; context?: string | null }>;
   sourceLocale: string;
   targetLocale: string;
+  /** Preferred translations for specific source terms. */
+  glossary?: Record<string, string>;
+  /** Terms to keep verbatim in every locale. */
+  doNotTranslate?: string[];
+  /** Tone/register for the translation. */
+  formality?: "formal" | "informal" | "neutral";
+}
+
+/** Build the system/user prompt for a request, forwarding all translation controls. */
+export function buildPromptForRequest(request: TranslationRequest): {
+  system: string;
+  user: string;
+} {
+  return buildTranslationPrompt({
+    sourceLocale: request.sourceLocale,
+    targetLocale: request.targetLocale,
+    strings: request.strings,
+    glossary: request.glossary,
+    doNotTranslate: request.doNotTranslate,
+    formality: request.formality,
+  });
 }
 
 export interface TranslationResult {
