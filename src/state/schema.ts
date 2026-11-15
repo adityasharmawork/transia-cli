@@ -59,6 +59,11 @@ export const TransiaConfigSchema = z.object({
       formality: z.enum(["formal", "informal", "neutral"]).optional(),
     })
     .optional(),
+  // Next.js i18n routing mode. "cookie" (default): locale from a cookie, no URL
+  // change. "prefix": SEO URL-prefix mode (/es/...) via next-intl middleware and
+  // an app/[locale] segment. Defaults to "cookie" so existing configs are
+  // unaffected.
+  routing: z.enum(["cookie", "prefix"]).default("cookie"),
 });
 
 export type TransiaConfig = z.infer<typeof TransiaConfigSchema>;
@@ -138,6 +143,7 @@ export function createDefaultConfig(
       format: outputFormat ?? "next-intl",
       path: "locales",
     },
+    routing: "cookie",
   };
 
   if (providerPriority && providerPriority.length > 0) {
