@@ -20,6 +20,9 @@ function makeGitProject(): string {
     resolve(dir, "tsconfig.json"),
     JSON.stringify({ compilerOptions: { paths: { "@/*": ["./*"] } } }),
   );
+  // A tracked next.config.js with no plugin: the plugin edit backs it up under
+  // .transia-backup/, which a build-failure rollback must also clean up.
+  writeFileSync(resolve(dir, "next.config.js"), `module.exports = {};\n`);
   mkdirSync(resolve(dir, "app", "api"), { recursive: true });
   writeFileSync(
     resolve(dir, "app", "layout.tsx"),

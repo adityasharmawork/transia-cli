@@ -84,7 +84,12 @@ const METADATA_BASENAMES = new Set([
 ]);
 
 function isKeptFile(name: string): boolean {
-  const base = name.split(".")[0];
+  if (name === "favicon.ico") return true;
+  // Basename before the first dot, with any trailing digits stripped, so Next's
+  // numbered variants (icon1.png, apple-icon2.png, opengraph-image1.png) and
+  // multi-segment names (opengraph-image.alt.txt) all map to their family.
+  const dot = name.indexOf(".");
+  const base = (dot === -1 ? name : name.slice(0, dot)).replace(/\d+$/, "");
   return METADATA_BASENAMES.has(base);
 }
 

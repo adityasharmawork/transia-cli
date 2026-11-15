@@ -127,6 +127,25 @@ describe("computeMovePlan", () => {
     expect(plan.moves).toContainEqual({ from: "app/dashboard", to: "app/[locale]/dashboard" });
   });
 
+  it("keeps numbered metadata variants (icon1.png, opengraph-image1.png) at the root", () => {
+    const p = computeMovePlan([
+      { name: "icon1.png", isDir: false },
+      { name: "apple-icon2.png", isDir: false },
+      { name: "opengraph-image1.png", isDir: false },
+      { name: "opengraph-image.alt.txt", isDir: false },
+      { name: "page.tsx", isDir: false },
+    ]);
+    expect(p.keep).toEqual(
+      expect.arrayContaining([
+        "icon1.png",
+        "apple-icon2.png",
+        "opengraph-image1.png",
+        "opengraph-image.alt.txt",
+      ]),
+    );
+    expect(p.move).toEqual(["page.tsx"]);
+  });
+
   it("ignores an existing [locale] dir and respects a src/app base", () => {
     const srcPlan = computeMovePlan(
       [

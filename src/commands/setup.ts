@@ -328,6 +328,12 @@ function runGuardedMove(
       "No `@/*` path alias detected — relative imports may break when files move. If `next build` fails, the move is rolled back automatically; then use the guided (non---move) steps.",
     );
   }
+  // `git mv` relocates whole directories, so git-ignored files inside a moved
+  // route folder (e.g. a local scratch file) are physically moved and cannot be
+  // restored from git on rollback. Warn rather than silently risk them.
+  skipped.push(
+    "Note: --move uses `git mv`, which relocates git-ignored files inside moved route folders too (they can't be restored from git on rollback).",
+  );
 
   const localeDir = resolve(appAbs, "[locale]");
 
@@ -338,17 +344,15 @@ function runGuardedMove(
       /* best effort */
     }
     // Remove untracked scaffold artifacts and the (now re-emptied) [locale] dir.
+    // rmSync of the [locale] dir clears any untracked file left there (e.g. a
+    // freshly written template); we avoid `git clean` with a "[locale]" pathspec
+    // because the brackets are a glob character class, not a literal.
     for (const p of scaffoldArtifacts) {
       try {
         rmSync(p, { recursive: true, force: true });
       } catch {
         /* ignore */
       }
-    }
-    try {
-      git(projectRoot, ["clean", "-fdq", "--", `${appDirRel}/[locale]`]);
-    } catch {
-      /* ignore */
     }
     rmSync(localeDir, { recursive: true, force: true });
   };
@@ -467,6 +471,12 @@ export function setupNextIntlPrefix(
   const srcApp = existsSync(resolve(projectRoot, "src", "app"));
   const appDirRel = srcApp ? "src/app" : "app";
   const layoutRoutingImport = srcApp ? "../../../i18n/routing" : "../../i18n/routing";
+  // i18n always lives at <root>/i18n. Next discovers middleware/proxy next to the
+  // app: at <root> for a root app, under src/ for a src/app project. The routing
+  // import is relative to the middleware's location: `./i18n/routing` from root,
+  // `../i18n/routing` from src/ (src/<mw> -> ../i18n = <root>/i18n).
+  const mwDir = srcApp ? resolve(projectRoot, "src") : projectRoot;
+  const mwRoutingImport = srcApp ? "../i18n/routing" : "./i18n/routing";
 
   const artifacts: string[] = [];
   const writeNew = (absPath: string, contents: string, label: string): void => {
@@ -492,15 +502,18 @@ export function setupNextIntlPrefix(
     skipped.push("i18n/request.ts exists — ensure it reads `requestLocale` (prefix mode), not a cookie.");
   }
 
-  // 3. middleware.ts (Next <=15) / proxy.ts (Next >=16) at the project root.
-  const mwPath = resolve(projectRoot, mwFile);
-  const otherMw = resolve(projectRoot, mwFile === "proxy.ts" ? "middleware.ts" : "proxy.ts");
+  // 3. middleware.ts (Next <=15) / proxy.ts (Next >=16), next to the app
+  //    (project root, or src/ for a src/app project so Next discovers it).
+  const mwPath = resolve(mwDir, mwFile);
+  const otherMw = resolve(mwDir, mwFile === "proxy.ts" ? "middleware.ts" : "proxy.ts");
+  const mwRel = relative(projectRoot, mwPath);
   if (!existsSync(mwPath) && !existsSync(otherMw)) {
-    writeFileSync(mwPath, middlewareSource("./i18n/routing"), "utf-8");
-    created.push(mwFile);
+    mkdirSync(dirname(mwPath), { recursive: true });
+    writeFileSync(mwPath, middlewareSource(mwRoutingImport), "utf-8");
+    created.push(mwRel);
     artifacts.push(mwPath);
   } else {
-    skipped.push(`${mwFile} (or an existing middleware/proxy) — ensure it calls createMiddleware(routing).`);
+    skipped.push(`${mwRel} (or an existing middleware/proxy) — ensure it calls createMiddleware(routing).`);
   }
 
   // 4. messages dir + source-locale JSON.
@@ -519,11 +532,18 @@ export function setupNextIntlPrefix(
     const current = readFileSync(nextConfigPath, "utf-8");
     const r = addNextIntlPlugin(current);
     if (r.changed) {
-      const outcome = safeWriteFile(nextConfigPath, r.output, {
-        backupPath: resolve(projectRoot, ".transia-backup", "next-config", relative(projectRoot, nextConfigPath)),
-      });
+      const backupPath = resolve(
+        projectRoot,
+        ".transia-backup",
+        "next-config",
+        relative(projectRoot, nextConfigPath),
+      );
+      const outcome = safeWriteFile(nextConfigPath, r.output, { backupPath });
       if (outcome === "written") {
         created.push(`${relative(projectRoot, nextConfigPath)} (next-intl plugin added)`);
+        // Track the backup so a --move rollback removes it too; otherwise the
+        // untracked backup would leave the tree dirty and trap the next --move.
+        artifacts.push(backupPath);
       }
     } else if (!current.includes("next-intl/plugin")) {
       skipped.push(
@@ -549,13 +569,19 @@ export function setupNextIntlPrefix(
     return { installed, created, skipped };
   }
 
-  // 6b. Default (no --move): write the [locale] layout template iff absent and
-  //     print the guided move checklist. Never move routes, never clobber.
-  writeNew(
-    resolve(appAbs, "[locale]", "layout.tsx"),
-    localeLayoutTemplate(layoutRoutingImport),
-    `${appDirRel}/[locale]/layout.tsx`,
-  );
+  // 6b. Default (no --move): print the guided move checklist. Never move routes,
+  //     never clobber. Only scaffold the [locale] layout template when there is
+  //     NO root layout to move — otherwise the printed `git mv app/layout.tsx
+  //     app/[locale]/layout.tsx` would collide with a template we just wrote.
+  const hasRootLayout =
+    existsSync(resolve(appAbs, "layout.tsx")) || existsSync(resolve(appAbs, "layout.jsx"));
+  if (!hasRootLayout) {
+    writeNew(
+      resolve(appAbs, "[locale]", "layout.tsx"),
+      localeLayoutTemplate(layoutRoutingImport),
+      `${appDirRel}/[locale]/layout.tsx`,
+    );
+  }
 
   if (existsSync(appAbs)) {
     const entries = readdirSync(appAbs, { withFileTypes: true }).map((d) => ({
@@ -564,10 +590,14 @@ export function setupNextIntlPrefix(
     }));
     const plan = computeMovePlan(entries, appDirRel);
     if (plan.move.length > 0) {
+      const adaptNote = hasRootLayout
+        ? "\n      Then adapt the moved app/[locale]/layout.tsx for next-intl (read `locale` from params, set <html lang>, wrap with <NextIntlClientProvider>)."
+        : "";
       skipped.push(
         "To finish prefix routing, move your routes under [locale] (commit/clean first), then run `next build`:\n" +
           plan.gitMvCommands.map((c) => "      " + c).join("\n") +
-          "\n      Then move providers/fonts from the old root layout into app/[locale]/layout.tsx." +
+          adaptNote +
+          "\n      Heads-up: `git mv` relocates whole directories, so any git-ignored files inside moved route folders move too." +
           "\n      (or re-run `transia setup --seo --move` to do this automatically with a build-verify rollback)",
       );
     }
