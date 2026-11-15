@@ -32,6 +32,10 @@ export interface Candidate {
   attribute?: string;
   /** For jsx-attr: true when the value was ALREADY in `{...}` (e.g. title={"x"}). */
   attrExpressionContainer?: boolean;
+  /** Nearest enclosing JSX element's tag name (undefined for fragments/member/namespaced). */
+  elementName?: string;
+  /** Auto-derived role hint for the prompt (e.g. "button label", "image alt text"), or undefined. */
+  autoContext?: string;
   /** True if the string is an operand of a comparison (===, !==, <, > ...). */
   insideComparison: boolean;
   /** Nearest enclosing call callee name (e.g. "cn", "clsx", "t"). */
@@ -51,6 +55,71 @@ export interface Candidate {
 }
 
 const COMPARISON_OPERATORS = new Set(["==", "===", "!=", "!==", "<", ">", "<=", ">="]);
+
+/**
+ * Role hints derived from a string's syntactic position, passed to the LLM as
+ * per-string context. We emit a hint only for high-signal positions — a button
+ * label, a heading, an alt text translate differently from prose — and stay
+ * silent for generic containers (p/span/div) and custom components, so we never
+ * pay prompt tokens for noise. These hints only reach the prompt (and state
+ * metadata); they never influence the apply edit or the content hash.
+ */
+const ELEMENT_CONTEXT: Record<string, string> = {
+  button: "button label",
+  a: "link text",
+  h1: "heading",
+  h2: "heading",
+  h3: "heading",
+  h4: "heading",
+  h5: "heading",
+  h6: "heading",
+  label: "form field label",
+  option: "dropdown option",
+  th: "table column header",
+  summary: "expandable section summary",
+  figcaption: "image caption",
+  legend: "fieldset legend",
+};
+
+const ATTR_CONTEXT: Record<string, string> = {
+  alt: "image alt text",
+  placeholder: "input placeholder text",
+  title: "tooltip / title text",
+  label: "label",
+  "aria-label": "accessibility label (screen reader)",
+  "aria-description": "accessibility description (screen reader)",
+  "aria-roledescription": "accessibility role description (screen reader)",
+  "aria-placeholder": "accessibility placeholder (screen reader)",
+};
+
+/** The nearest enclosing JSX element's tag name, or undefined. */
+function enclosingElementName(path: any): string | undefined {
+  let current = path;
+  while (current) {
+    if (current.node?.type === "JSXElement") {
+      const nameNode = current.node.openingElement?.name;
+      if (nameNode?.type === "JSXIdentifier" && typeof nameNode.name === "string") {
+        return nameNode.name;
+      }
+      return undefined; // member-expression / namespaced names carry no HTML role
+    }
+    current = current.parentPath;
+  }
+  return undefined;
+}
+
+/** Map (role, attribute, elementName) to a short role hint, or undefined when none fits. */
+function deriveAutoContext(
+  role: CandidateRole,
+  attribute: string | undefined,
+  elementName: string | undefined,
+): string | undefined {
+  if (role === "jsx-attr" && attribute) {
+    return ATTR_CONTEXT[attribute.toLowerCase()];
+  }
+  if (elementName) return ELEMENT_CONTEXT[elementName];
+  return undefined;
+}
 
 interface ContextComment {
   line: number;
@@ -261,12 +330,16 @@ export function recordCandidates(source: string, filePath: string): Candidate[] 
     const line = path.node.loc?.start.line ?? 0;
     const { sanitized } = sanitizeForPrompt(trimmed, `${filePath}:${line}`);
 
+    const elementName = enclosingElementName(path);
+
     candidates.push({
       start,
       end,
       role,
       attribute: extra.attribute,
       attrExpressionContainer: extra.attrExpressionContainer,
+      elementName,
+      autoContext: deriveAutoContext(role, extra.attribute, elementName),
       insideComparison: detectInsideComparison(path),
       insideCall: enclosingCallName(path),
       sanitized,

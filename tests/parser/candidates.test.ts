@@ -82,3 +82,44 @@ describe("recordCandidates — per-string transia-context comments", () => {
     expect(find(cands, "Late")?.context).toBe("later");
   });
 });
+
+describe("recordCandidates — auto role/attribute context", () => {
+  const ac = (src: string, s: string) =>
+    find(recordCandidates(src, "A.tsx"), s)?.autoContext;
+
+  it("labels button text as a button label", () => {
+    expect(ac(`function A(){ return <button>Submit order</button>; }`, "Submit order")).toBe(
+      "button label",
+    );
+  });
+
+  it("labels image alt text", () => {
+    expect(ac(`function A(){ return <img alt="Team photo" />; }`, "Team photo")).toBe(
+      "image alt text",
+    );
+  });
+
+  it("labels any heading h1-h6 as a heading", () => {
+    expect(ac(`function A(){ return <h2>Our mission</h2>; }`, "Our mission")).toBe("heading");
+  });
+
+  it("labels aria-label as a screen-reader accessibility label", () => {
+    expect(
+      ac(`function A(){ return <button aria-label="Close the dialog">Dismiss</button>; }`, "Close the dialog"),
+    ).toMatch(/accessibility/i);
+  });
+
+  it("records the nearest enclosing element name", () => {
+    const c = find(
+      recordCandidates(`function A(){ return <a href="/x">Learn more</a>; }`, "A.tsx"),
+      "Learn more",
+    );
+    expect(c?.elementName).toBe("a");
+    expect(c?.autoContext).toBe("link text");
+  });
+
+  it("gives no auto context for generic body text or custom components", () => {
+    expect(ac(`function A(){ return <p>Just a paragraph here</p>; }`, "Just a paragraph here")).toBeUndefined();
+    expect(ac(`function A(){ return <Card>Custom body text here</Card>; }`, "Custom body text here")).toBeUndefined();
+  });
+});
