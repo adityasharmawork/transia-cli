@@ -117,7 +117,7 @@ describe("setupNextIntlPrefix (scaffold; default, no --move)", () => {
       `export default function L({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
     );
     try {
-      setupNextIntlPrefix(sdir, config, "npm", {});
+      setupNextIntlPrefix(sdir, { ...config, siteUrl: "https://example.com" } as typeof config, "npm", {});
       // middleware (proxy.ts on Next 16) must be under src/, not the project root.
       expect(existsSync(resolve(sdir, "src/proxy.ts"))).toBe(true);
       expect(existsSync(resolve(sdir, "proxy.ts"))).toBe(false);
@@ -125,6 +125,11 @@ describe("setupNextIntlPrefix (scaffold; default, no --move)", () => {
       expect(readFileSync(resolve(sdir, "src/proxy.ts"), "utf8")).toContain('"../i18n/routing"');
       // i18n still lives at the project root.
       expect(existsSync(resolve(sdir, "i18n/routing.ts"))).toBe(true);
+      // sitemap lives under src/app and reaches root i18n via one more `../`.
+      expect(existsSync(resolve(sdir, "src/app/sitemap.ts"))).toBe(true);
+      expect(readFileSync(resolve(sdir, "src/app/sitemap.ts"), "utf8")).toContain(
+        'from "../../i18n/routing"',
+      );
     } finally {
       rmSync(sdir, { recursive: true, force: true });
     }
