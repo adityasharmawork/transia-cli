@@ -14,6 +14,19 @@ interface ExtractionResult {
 }
 
 /**
+ * Combine the auto-derived role hint with the author's explicit
+ * `transia-context` note into the single `context` string the prompt consumes.
+ * Both are complementary (structural role + semantic note), so we keep both;
+ * null when neither is present.
+ */
+function mergeContext(auto?: string, explicit?: string | null): string | null {
+  const parts = [auto, explicit].filter(
+    (x): x is string => typeof x === "string" && x.trim().length > 0,
+  );
+  return parts.length > 0 ? parts.join(" — ") : null;
+}
+
+/**
  * Extract translatable strings from a source file.
  *
  * This is now a thin projection over the single shared recorder: it records
@@ -38,7 +51,7 @@ export function extractStringsFromSource(
     strings.push({
       original: c.sanitized,
       hash: c.hash,
-      context: c.context,
+      context: mergeContext(c.autoContext, c.context),
       source: `${filePath}:${c.line}`,
     });
   }

@@ -39,3 +39,30 @@ describe("extractStringsFromSource (recorder + classifier)", () => {
     expect(withExclude).toContain("Logo image"); // alt still included
   });
 });
+
+describe("extractStringsFromSource — merged per-string context", () => {
+  const ctxOf = (source: string, original: string) =>
+    extractStringsFromSource(source, "A.tsx").strings.find((s) => s.original === original)?.context;
+
+  it("combines the auto role hint with an explicit transia-context note", () => {
+    const src = `function A(){ return (<div>
+      {/* transia-context: checkout CTA */}
+      <button>Place order</button>
+    </div>); }`;
+    const ctx = ctxOf(src, "Place order");
+    expect(ctx).toContain("button label");
+    expect(ctx).toContain("checkout CTA");
+  });
+
+  it("uses the auto hint alone when there is no comment", () => {
+    expect(ctxOf(`function A(){ return <img alt="A smiling team" />; }`, "A smiling team")).toBe(
+      "image alt text",
+    );
+  });
+
+  it("leaves context null for generic text with no hint and no comment", () => {
+    expect(
+      ctxOf(`function A(){ return <p>An ordinary sentence of copy</p>; }`, "An ordinary sentence of copy"),
+    ).toBeNull();
+  });
+});
