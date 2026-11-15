@@ -4,6 +4,7 @@ import {
   cookieRequestConfig,
   localesModule,
   wrapLayoutForNextIntl,
+  addNextIntlPlugin,
 } from "../../src/setup/next-cookie";
 
 const parseOk = (s: string) => {
@@ -89,5 +90,39 @@ describe("wrapLayoutForNextIntl", () => {
     const r = wrapLayoutForNextIntl(`export default function X() { return <div>hi there</div>; }`);
     expect(r.wrapped).toBe(false);
     expect((r as { reason: string }).reason).toBeTruthy();
+  });
+});
+
+describe("addNextIntlPlugin", () => {
+  const NEXT_TS = `import type { NextConfig } from "next";
+const nextConfig: NextConfig = { reactStrictMode: true };
+export default nextConfig;
+`;
+  const NEXT_OBJ = `export default { reactStrictMode: true };\n`;
+
+  it("wraps `export default nextConfig` and imports the plugin", () => {
+    const r = addNextIntlPlugin(NEXT_TS);
+    expect(r.changed).toBe(true);
+    expect(r.output).toContain("next-intl/plugin");
+    expect(r.output).toContain("withNextIntl(nextConfig)");
+    expect(parseOk(r.output)).toBe(true);
+  });
+
+  it("wraps an inline default-exported config object", () => {
+    const r = addNextIntlPlugin(NEXT_OBJ);
+    expect(r.changed).toBe(true);
+    expect(r.output).toContain("withNextIntl(");
+    expect(parseOk(r.output)).toBe(true);
+  });
+
+  it("is idempotent — a second run makes no change", () => {
+    const once = addNextIntlPlugin(NEXT_TS).output;
+    const twice = addNextIntlPlugin(once);
+    expect(twice.changed).toBe(false);
+    expect(twice.output).toBe(once);
+  });
+
+  it("returns changed:false for an unrecognized config shape", () => {
+    expect(addNextIntlPlugin(`const x = 1;\n`).changed).toBe(false);
   });
 });

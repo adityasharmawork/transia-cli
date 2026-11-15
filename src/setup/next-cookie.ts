@@ -182,3 +182,87 @@ export function wrapLayoutForNextIntl(source: string): LayoutWrapResult {
 
   return { output, wrapped: true };
 }
+
+/**
+ * Add the next-intl plugin to a next.config file so it loads i18n/request.ts.
+ * Wraps the default export (ESM) or module.exports (CJS) in
+ * `withNextIntl(...)`. Idempotent; returns `changed:false` for a shape it can't
+ * confidently rewrite so the caller can print manual instructions.
+ */
+export function addNextIntlPlugin(source: string): { output: string; changed: boolean } {
+  if (source.includes("next-intl/plugin")) return { output: source, changed: false };
+
+  let ast;
+  try {
+    ast = parseModule(source);
+  } catch {
+    return { output: source, changed: false };
+  }
+
+  let statementStart: number | null = null;
+  let declStart: number | null = null;
+  let declEnd: number | null = null;
+
+  traverse(ast, {
+    ExportDefaultDeclaration(path: any) {
+      if (statementStart !== null) return;
+      const d = path.node.declaration;
+      if (d?.start != null && d?.end != null) {
+        statementStart = path.node.start;
+        declStart = d.start;
+        declEnd = d.end;
+      }
+    },
+    AssignmentExpression(path: any) {
+      if (statementStart !== null) return;
+      const l = path.node.left;
+      if (
+        l?.type === "MemberExpression" &&
+        l.object?.type === "Identifier" &&
+        l.object.name === "module" &&
+        l.property?.type === "Identifier" &&
+        l.property.name === "exports"
+      ) {
+        const r = path.node.right;
+        if (r?.start != null && r?.end != null) {
+          statementStart = path.parentPath?.node?.start ?? path.node.start;
+          declStart = r.start;
+          declEnd = r.end;
+        }
+      }
+    },
+  });
+
+  if (statementStart === null || declStart === null || declEnd === null) {
+    return { output: source, changed: false };
+  }
+
+  const directivesEnd =
+    ((ast.program as any).directives ?? []).reduce(
+      (m: number, d: any) => Math.max(m, d.end ?? 0),
+      0,
+    ) || 0;
+
+  const insertions: Insertion[] = [
+    { pos: directivesEnd, text: `import createNextIntlPlugin from "next-intl/plugin";\n` },
+    {
+      pos: statementStart,
+      text: `const withNextIntl = createNextIntlPlugin("./i18n/request.ts");\n\n`,
+    },
+    { pos: declStart, text: "withNextIntl(" },
+    { pos: declEnd, text: ")" },
+  ];
+
+  let output: string;
+  try {
+    output = buildEdit(source, [], insertions);
+  } catch {
+    return { output: source, changed: false };
+  }
+  try {
+    parse(output, { sourceType: "module", plugins: ["jsx", "typescript", "decorators-legacy"] });
+  } catch {
+    return { output: source, changed: false };
+  }
+  return { output, changed: true };
+}
