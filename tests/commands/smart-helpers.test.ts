@@ -34,6 +34,16 @@ describe("detectApplied", () => {
     );
     expect(detectApplied(dir, ["app/**/*.{tsx,jsx}"])).toBe(true);
   });
+
+  it("ignores the generated language-switcher widget (added before apply, not evidence)", () => {
+    mkdirSync(resolve(dir, "src", "components"), { recursive: true });
+    writeFileSync(
+      resolve(dir, "src", "components", "TransiaLanguageSwitcher.tsx"),
+      `import {useTranslation} from "react-i18next";\nexport function W(){ const {t}=useTranslation(); return null; }`,
+    );
+    writeFileSync(resolve(dir, "src", "page.tsx"), `export default function P(){ return <h1>Hardcoded</h1>; }`);
+    expect(detectApplied(dir, ["src/**/*.{tsx,jsx}"])).toBe(false);
+  });
 });
 
 describe("summarizeReadiness", () => {

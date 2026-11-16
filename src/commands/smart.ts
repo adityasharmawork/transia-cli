@@ -13,6 +13,7 @@ import { setupCommand } from "./setup.js";
 import { widgetCommand } from "./widget.js";
 import { createProject } from "../api/client.js";
 import { logger } from "../utils/logger.js";
+import { ExitCode } from "../utils/errors.js";
 import { shouldPromptInteractively } from "../utils/tty.js";
 import {
   detectApplied,
@@ -141,10 +142,13 @@ export async function smartCommand(
 ): Promise<void> {
   if (depth > 5) return;
 
-  // Prompt a human at a real TTY; auto-proceed under --yes or when non-interactive
-  // (piped/CI) so smart mode never hangs waiting on stdin.
+  // Confirm an action. `--yes` is explicit opt-in (proceed). At a real TTY, ask
+  // the human. When non-interactive WITHOUT `--yes`, do NOT assume "yes" — we
+  // never silently spend / install / rewrite source unattended, and we never
+  // block on stdin. So it returns false (skip) in that case.
   const ask = async (message: string, dflt = true): Promise<boolean> => {
-    if (!shouldPromptInteractively(options.yes, process.stdin.isTTY)) return true;
+    if (options.yes) return true;
+    if (!shouldPromptInteractively(options.yes, process.stdin.isTTY)) return false;
     return confirm({ message, default: dflt });
   };
 
@@ -155,14 +159,28 @@ export async function smartCommand(
   console.log(chalk.dim("  Smart mode — detecting project state..."));
   console.log("");
 
-  // State 1: Not logged in
+  // State 1: Not logged in. Login opens a browser and needs a human, so it only
+  // runs at a real TTY — never auto-proceed it unattended (that would open a
+  // browser and poll for minutes in CI, even with --yes).
   if (!state.isLoggedIn) {
+    if (process.stdin.isTTY !== true) {
+      console.log(
+        chalk.yellow("  You're not logged in. Run `transia login` first (it opens a browser)."),
+      );
+      process.exitCode = ExitCode.AUTH_ERROR;
+      return;
+    }
     console.log(
       chalk.yellow("  You're not logged in yet. Let's get you set up!"),
     );
     console.log("");
-    const proceed = await ask("Would you like to log in to Transia?");
-    if (!proceed) return;
+    if (!options.yes) {
+      const proceed = await confirm({
+        message: "Would you like to log in to Transia?",
+        default: true,
+      });
+      if (!proceed) return;
+    }
     await loginCommand();
     return smartCommand(projectRoot, options, depth + 1);
   }
@@ -175,8 +193,11 @@ export async function smartCommand(
     );
     console.log("");
     const proceed = await ask("Would you like to initialize Transia in this project?");
-    if (!proceed) return;
-    await initCommand(projectRoot);
+    if (!proceed) {
+      console.log(chalk.dim("  Run `transia init` to set up (or pass --yes)."));
+      return;
+    }
+    await initCommand(projectRoot, { yes: options.yes });
     return;
   }
 

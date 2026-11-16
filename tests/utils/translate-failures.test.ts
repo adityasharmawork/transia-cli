@@ -19,6 +19,12 @@ describe("summarizeBatchFailures", () => {
     expect(out).toContain("(+2 more)");
   });
 
+  it("keeps messages distinct when they differ only beyond the truncation length", () => {
+    const shared = "x".repeat(30);
+    const out = summarizeBatchFailures([shared + "AAA", shared + "BBB"], 3, 20);
+    expect(out.split("\n").length).toBe(2);
+  });
+
   it("collapses whitespace and truncates long messages", () => {
     const long = "x".repeat(300);
     const out = summarizeBatchFailures([`  too   long:\n${long}`], 3, 40);

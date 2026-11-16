@@ -20,7 +20,7 @@ import { validateTranslation } from "../output/validator.js";
 import { loadApiKey, clearKeys } from "../utils/keys.js";
 import { loadProjectEnv } from "../utils/env.js";
 import { logUsage } from "../api/client.js";
-import { logger } from "../utils/logger.js";
+import { logger, redact } from "../utils/logger.js";
 import { summarizeBatchFailures } from "../utils/translate-failures.js";
 import { TransiaError, ExitCode } from "../utils/errors.js";
 
@@ -342,7 +342,7 @@ export async function translateCommand(
           `  ${failedBatches} batch(es) failed. Run again to retry.`,
         ),
       );
-      const reasons = summarizeBatchFailures(batchErrorMessages);
+      const reasons = redact(summarizeBatchFailures(batchErrorMessages));
       if (reasons) {
         console.log(chalk.yellow("  Reasons:"));
         for (const line of reasons.split("\n")) {

@@ -18,10 +18,14 @@ export function detectApplied(
   include: string[],
   exclude: string[] = [],
 ): boolean {
+  // The generated language-switcher widget itself calls useTranslation() — it is
+  // added before apply and is NOT evidence that the user's strings were replaced,
+  // so never let it count.
+  const ignore = [...exclude, "**/TransiaLanguageSwitcher.{tsx,jsx,ts,js}"];
   for (const pattern of include) {
     let files: string[] = [];
     try {
-      files = globSync(pattern, { cwd: projectRoot, absolute: true, ignore: exclude });
+      files = globSync(pattern, { cwd: projectRoot, absolute: true, ignore });
     } catch {
       continue;
     }
