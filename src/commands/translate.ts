@@ -20,7 +20,8 @@ import { validateTranslation } from "../output/validator.js";
 import { loadApiKey, clearKeys } from "../utils/keys.js";
 import { loadProjectEnv } from "../utils/env.js";
 import { logUsage } from "../api/client.js";
-import { logger } from "../utils/logger.js";
+import { logger, redact } from "../utils/logger.js";
+import { summarizeBatchFailures } from "../utils/translate-failures.js";
 import { TransiaError, ExitCode } from "../utils/errors.js";
 
 interface TranslateOptions {
@@ -212,6 +213,7 @@ export async function translateCommand(
     let totalTokens = 0;
     let failedBatches = 0;
     let validationFailures = 0;
+    const batchErrorMessages: string[] = [];
 
     const limit = pLimit(3);
 
@@ -275,6 +277,7 @@ export async function translateCommand(
             failedBatches++;
             const msg =
               error instanceof Error ? error.message : String(error);
+            batchErrorMessages.push(msg);
             logger.debug(
               `Batch ${batchIndex + 1} failed for ${locale}: ${msg}`,
             );
@@ -339,6 +342,13 @@ export async function translateCommand(
           `  ${failedBatches} batch(es) failed. Run again to retry.`,
         ),
       );
+      const reasons = redact(summarizeBatchFailures(batchErrorMessages));
+      if (reasons) {
+        console.log(chalk.yellow("  Reasons:"));
+        for (const line of reasons.split("\n")) {
+          console.log(chalk.dim(`    ${line}`));
+        }
+      }
     }
     if (validationFailures > 0) {
       console.log(
