@@ -1,0 +1,48 @@
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import { detectApplied, summarizeReadiness } from "../../src/commands/smart-helpers";
+
+describe("detectApplied", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(resolve(tmpdir(), "transia-applied-"));
+    mkdirSync(resolve(dir, "app"), { recursive: true });
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("is false when the source still has only hardcoded strings (apply not run)", () => {
+    writeFileSync(
+      resolve(dir, "app", "page.tsx"),
+      `export default function P(){ return <h1>Hello world</h1>; }`,
+    );
+    expect(detectApplied(dir, ["app/**/*.{tsx,jsx}"])).toBe(false);
+  });
+
+  it("is true when a file uses a translation hook (apply has run)", () => {
+    writeFileSync(
+      resolve(dir, "app", "page.tsx"),
+      `import {useTranslations} from "next-intl";\nexport default function P(){ const t=useTranslations(); return <h1>{t("hello")}</h1>; }`,
+    );
+    expect(detectApplied(dir, ["app/**/*.{tsx,jsx}"])).toBe(true);
+  });
+});
+
+describe("summarizeReadiness", () => {
+  it("claims full setup only when applied", () => {
+    const r = summarizeReadiness(true);
+    expect(r.applied).toBe(true);
+    expect(r.title).toMatch(/fully set up/i);
+    expect(r.nextStep).toBeNull();
+  });
+
+  it("never claims full setup when not applied, and names `apply` as the next step", () => {
+    const r = summarizeReadiness(false);
+    expect(r.applied).toBe(false);
+    expect(r.title).not.toMatch(/fully set up/i);
+    expect(r.nextStep).toMatch(/transia apply/);
+  });
+});

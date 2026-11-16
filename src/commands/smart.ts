@@ -13,6 +13,7 @@ import { setupCommand } from "./setup.js";
 import { widgetCommand } from "./widget.js";
 import { createProject } from "../api/client.js";
 import { logger } from "../utils/logger.js";
+import { detectApplied, summarizeReadiness } from "./smart-helpers.js";
 import type { TransiaConfig } from "../state/schema.js";
 
 interface WorkflowState {
@@ -23,6 +24,7 @@ interface WorkflowState {
   translationsCoverage: number;
   hasI18nSetup: boolean;
   hasWidget: boolean;
+  hasApplied: boolean;
   config: TransiaConfig | null;
 }
 
@@ -41,6 +43,7 @@ function detectWorkflowState(projectRoot: string): WorkflowState {
   let translationsCoverage = 0;
   let hasI18nSetup = false;
   let hasWidget = false;
+  let hasApplied = false;
 
   if (hasConfig) {
     try {
@@ -102,6 +105,9 @@ function detectWorkflowState(projectRoot: string): WorkflowState {
       resolve(projectRoot, "components", "TransiaLanguageSwitcher.tsx"),
     ];
     hasWidget = widgetCandidates.some((p) => existsSync(p));
+
+    // 7. Has `apply` run? (source references a translation hook)
+    hasApplied = detectApplied(projectRoot, config.include, config.exclude);
   }
 
   return {
@@ -112,6 +118,7 @@ function detectWorkflowState(projectRoot: string): WorkflowState {
     translationsCoverage,
     hasI18nSetup,
     hasWidget,
+    hasApplied,
     config,
   };
 }
@@ -209,8 +216,11 @@ export async function smartCommand(
     return smartCommand(projectRoot, depth + 1);
   }
 
-  // State 8: Everything is set up!
-  console.log(chalk.green.bold("  Your project is fully set up!"));
+  // State 8: translations + library + widget are in place. Only claim "fully
+  // set up" once `apply` has actually replaced the hardcoded strings; otherwise
+  // guide the user to the last step instead of over-claiming.
+  const readiness = summarizeReadiness(state.hasApplied);
+  console.log(chalk.green.bold(`  ${readiness.title}`));
   console.log("");
 
   if (state.config) {
@@ -232,7 +242,24 @@ export async function smartCommand(
     console.log(
       `  ${chalk.dim("Widget:")}          ${state.hasWidget ? "installed" : "not added"}`,
     );
+    console.log(
+      `  ${chalk.dim("Applied:")}         ${state.hasApplied ? "yes (t() calls in source)" : chalk.yellow("no — strings still hardcoded")}`,
+    );
     console.log("");
+  }
+
+  // Make `apply` part of the guided flow when it hasn't run yet.
+  if (!readiness.applied && readiness.nextStep) {
+    console.log(chalk.yellow(`  Last step: ${readiness.nextStep}`));
+    console.log("");
+    const runApply = await confirm({
+      message: "Run `transia apply` now to replace hardcoded strings with t() calls?",
+      default: true,
+    });
+    if (runApply) {
+      await applyCommand(projectRoot, {});
+      return smartCommand(projectRoot, depth + 1);
+    }
   }
 
   const action = await select({
