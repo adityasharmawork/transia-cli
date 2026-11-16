@@ -51,9 +51,10 @@ program
     "Enterprise-grade BYOK AI translation CLI for React/Next.js applications",
   )
   .version(version)
-  .action(async () => {
+  .option("-y, --yes", "Smart mode: skip confirmations (CI / scripted)")
+  .action(async (options) => {
     try {
-      await smartCommand(process.cwd());
+      await smartCommand(process.cwd(), { yes: options?.yes });
     } catch (error) {
       handleError(error);
     }

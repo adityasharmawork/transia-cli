@@ -60,3 +60,13 @@ export function summarizeReadiness(applied: boolean): Readiness {
       "Run `transia apply` to replace the hardcoded strings in your source with t() calls (preview first with `transia apply --dry-run`).",
   };
 }
+
+/** Confirmation shown before smart mode auto-translates (which spends money). */
+export function spendPrompt(provider: string, locales: string[]): string {
+  return `Translate your strings into ${locales.join(", ")} using "${provider}"? This calls the provider API and may incur cost.`;
+}
+
+/** Confirmation shown before smart mode auto-runs setup (which installs packages). */
+export function installPrompt(library: string): string {
+  return `Install and configure "${library}" in this project? This runs your package manager to install it.`;
+}

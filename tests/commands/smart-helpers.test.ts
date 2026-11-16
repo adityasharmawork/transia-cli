@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { detectApplied, summarizeReadiness } from "../../src/commands/smart-helpers";
+import {
+  detectApplied,
+  summarizeReadiness,
+  spendPrompt,
+  installPrompt,
+} from "../../src/commands/smart-helpers";
 
 describe("detectApplied", () => {
   let dir: string;
@@ -44,5 +49,20 @@ describe("summarizeReadiness", () => {
     expect(r.applied).toBe(false);
     expect(r.title).not.toMatch(/fully set up/i);
     expect(r.nextStep).toMatch(/transia apply/);
+  });
+});
+
+describe("confirmation prompts", () => {
+  it("spendPrompt names the provider, the locales, and that it costs", () => {
+    const p = spendPrompt("openai", ["es", "fr"]);
+    expect(p).toContain("openai");
+    expect(p).toContain("es, fr");
+    expect(p).toMatch(/cost|API/i);
+  });
+
+  it("installPrompt names the library and that it installs", () => {
+    const p = installPrompt("next-intl");
+    expect(p).toContain("next-intl");
+    expect(p).toMatch(/install/i);
   });
 });

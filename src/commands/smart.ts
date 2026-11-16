@@ -13,7 +13,13 @@ import { setupCommand } from "./setup.js";
 import { widgetCommand } from "./widget.js";
 import { createProject } from "../api/client.js";
 import { logger } from "../utils/logger.js";
-import { detectApplied, summarizeReadiness } from "./smart-helpers.js";
+import { shouldPromptInteractively } from "../utils/tty.js";
+import {
+  detectApplied,
+  summarizeReadiness,
+  spendPrompt,
+  installPrompt,
+} from "./smart-helpers.js";
 import type { TransiaConfig } from "../state/schema.js";
 
 interface WorkflowState {
@@ -123,11 +129,24 @@ function detectWorkflowState(projectRoot: string): WorkflowState {
   };
 }
 
+export interface SmartOptions {
+  /** Skip confirmations (CI / scripted). */
+  yes?: boolean;
+}
+
 export async function smartCommand(
   projectRoot: string,
+  options: SmartOptions = {},
   depth = 0,
 ): Promise<void> {
   if (depth > 5) return;
+
+  // Prompt a human at a real TTY; auto-proceed under --yes or when non-interactive
+  // (piped/CI) so smart mode never hangs waiting on stdin.
+  const ask = async (message: string, dflt = true): Promise<boolean> => {
+    if (!shouldPromptInteractively(options.yes, process.stdin.isTTY)) return true;
+    return confirm({ message, default: dflt });
+  };
 
   const state = detectWorkflowState(projectRoot);
 
@@ -142,13 +161,10 @@ export async function smartCommand(
       chalk.yellow("  You're not logged in yet. Let's get you set up!"),
     );
     console.log("");
-    const proceed = await confirm({
-      message: "Would you like to log in to Transia?",
-      default: true,
-    });
+    const proceed = await ask("Would you like to log in to Transia?");
     if (!proceed) return;
     await loginCommand();
-    return smartCommand(projectRoot, depth + 1);
+    return smartCommand(projectRoot, options, depth + 1);
   }
 
   // State 2: Logged in but no config
@@ -158,10 +174,7 @@ export async function smartCommand(
         chalk.dim("— no project initialized yet."),
     );
     console.log("");
-    const proceed = await confirm({
-      message: "Would you like to initialize Transia in this project?",
-      default: true,
-    });
+    const proceed = await ask("Would you like to initialize Transia in this project?");
     if (!proceed) return;
     await initCommand(projectRoot);
     return;
@@ -173,19 +186,33 @@ export async function smartCommand(
     // Silent attempt — don't block the flow
   }
 
-  // State 4: No translations yet — auto-run
+  // State 4: No translations yet — confirm the spend, then run.
   if (!state.hasTranslations) {
+    if (
+      state.config &&
+      !(await ask(spendPrompt(state.config.provider.name, state.config.targetLocales)))
+    ) {
+      console.log(chalk.dim("  Skipped — run `transia translate` when you're ready."));
+      return;
+    }
     console.log(
       chalk.green("  Project initialized ") +
         chalk.dim("— translating strings..."),
     );
     console.log("");
     await translateCommand(projectRoot, {});
-    return smartCommand(projectRoot, depth + 1);
+    return smartCommand(projectRoot, options, depth + 1);
   }
 
-  // State 5: Translations exist but incomplete — auto-run
+  // State 5: Translations exist but incomplete — confirm the spend, then run.
   if (state.translationsCoverage < 100) {
+    if (
+      state.config &&
+      !(await ask(spendPrompt(state.config.provider.name, state.config.targetLocales)))
+    ) {
+      console.log(chalk.dim(`  Left at ${state.translationsCoverage}% — run \`transia translate\` to finish.`));
+      return;
+    }
     console.log(
       chalk.yellow(
         `  Translations are ${state.translationsCoverage}% complete — translating missing strings...`,
@@ -193,17 +220,22 @@ export async function smartCommand(
     );
     console.log("");
     await translateCommand(projectRoot, {});
-    return smartCommand(projectRoot, depth + 1);
+    return smartCommand(projectRoot, options, depth + 1);
   }
 
-  // State 6: No i18n setup yet — auto-run
+  // State 6: No i18n setup yet — confirm the install, then run.
   if (!state.hasI18nSetup && state.hasTranslations) {
+    const library = state.config?.output.format === "next-intl" ? "next-intl" : "i18next";
+    if (!(await ask(installPrompt(library)))) {
+      console.log(chalk.dim("  Skipped — run `transia setup` when you're ready."));
+      return;
+    }
     console.log(
       chalk.dim("  Configuring your project to use translations..."),
     );
     console.log("");
     await setupCommand(projectRoot, {});
-    return smartCommand(projectRoot, depth + 1);
+    return smartCommand(projectRoot, options, depth + 1);
   }
 
   // State 7: No widget yet — auto-run
@@ -213,7 +245,7 @@ export async function smartCommand(
     );
     console.log("");
     await widgetCommand(projectRoot, {});
-    return smartCommand(projectRoot, depth + 1);
+    return smartCommand(projectRoot, options, depth + 1);
   }
 
   // State 8: translations + library + widget are in place. Only claim "fully
@@ -252,14 +284,18 @@ export async function smartCommand(
   if (!readiness.applied && readiness.nextStep) {
     console.log(chalk.yellow(`  Last step: ${readiness.nextStep}`));
     console.log("");
-    const runApply = await confirm({
-      message: "Run `transia apply` now to replace hardcoded strings with t() calls?",
-      default: true,
-    });
+    const runApply = await ask(
+      "Run `transia apply` now to replace hardcoded strings with t() calls?",
+    );
     if (runApply) {
       await applyCommand(projectRoot, {});
-      return smartCommand(projectRoot, depth + 1);
+      return smartCommand(projectRoot, options, depth + 1);
     }
+  }
+
+  // The "what next" menu is interactive only; under --yes / non-interactive we're done.
+  if (!shouldPromptInteractively(options.yes, process.stdin.isTTY)) {
+    return;
   }
 
   const action = await select({
