@@ -51,10 +51,16 @@ export async function requireAuth(mode: AuthMode = "network"): Promise<void> {
     if (email) recordVerification(email);
     logger.debug(`Authenticated as ${result.email}`);
   } catch (error) {
-    // A definitive server answer (invalid session / any typed error) propagates.
-    if (error instanceof TransiaError) throw error;
-    // Server unreachable: with a local credential, proceed offline. Anything that
-    // truly needs the network surfaces its own error at the actual call.
+    // A definitive "invalid session" answer must fail — don't paper over a real
+    // logout. `verifyAuth` (via apiRequest) throws AUTH_ERROR for an expired
+    // session / 401; the `!result.valid` branch above throws AUTH_ERROR too.
+    if (error instanceof TransiaError && error.code === ExitCode.AUTH_ERROR) {
+      throw error;
+    }
+    // Everything else means we couldn't get a definitive answer — a network
+    // error, a timeout, or a server 5xx (all surface as NETWORK_ERROR from
+    // apiRequest). With a local credential, proceed offline; anything that truly
+    // needs the network surfaces its own error at the actual call.
     if (credentials) {
       logger.warn(
         "Could not reach Transia to verify your session; proceeding offline.",
@@ -62,6 +68,7 @@ export async function requireAuth(mode: AuthMode = "network"): Promise<void> {
       return;
     }
     // CI token with no stored credential and no network — fail loudly.
+    if (error instanceof TransiaError) throw error;
     throw new TransiaError(
       ExitCode.NETWORK_ERROR,
       `Could not verify authentication. Check your internet connection or run ${chalk.cyan("transia login")}.`,

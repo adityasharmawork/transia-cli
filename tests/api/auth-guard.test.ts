@@ -10,6 +10,7 @@ import { requireAuth } from "../../src/api/auth-guard";
 import { loadCredentials } from "../../src/state/credentials";
 import { verifyAuth } from "../../src/api/client";
 import { recordVerification, isVerificationFresh } from "../../src/state/verify-cache";
+import { TransiaError, ExitCode } from "../../src/utils/errors";
 
 const mockLoad = vi.mocked(loadCredentials);
 const mockVerify = vi.mocked(verifyAuth);
@@ -61,12 +62,29 @@ describe("requireAuth — offline-grace modes", () => {
     expect(isVerificationFresh(CREDS.email)).toBe(true); // recorded
   });
 
-  it("network mode: unreachable server + local credential → proceeds offline (no throw)", async () => {
+  it("network mode: NETWORK_ERROR from verifyAuth + local credential → proceeds offline", async () => {
+    // apiRequest throws TransiaError(NETWORK_ERROR) on a real fetch failure/timeout —
+    // the grace must key off the ExitCode, not off "is it a TransiaError".
     mockLoad.mockReturnValue(CREDS);
-    mockVerify.mockRejectedValue(new Error("ECONNREFUSED"));
+    mockVerify.mockRejectedValue(new TransiaError(ExitCode.NETWORK_ERROR, "offline"));
     await expect(requireAuth("network")).resolves.toBeUndefined();
     expect(mockVerify).toHaveBeenCalledTimes(1);
     expect(isVerificationFresh(CREDS.email)).toBe(false); // a failed verify is NOT cached
+  });
+
+  it("network mode: a non-TransiaError rejection + local credential → proceeds offline", async () => {
+    mockLoad.mockReturnValue(CREDS);
+    mockVerify.mockRejectedValue(new Error("ECONNREFUSED"));
+    await expect(requireAuth("network")).resolves.toBeUndefined();
+  });
+
+  it("network mode: AUTH_ERROR from verifyAuth (401) → throws, NOT graced", async () => {
+    mockLoad.mockReturnValue(CREDS);
+    mockVerify.mockRejectedValue(
+      new TransiaError(ExitCode.AUTH_ERROR, "Authentication failed."),
+    );
+    await expect(requireAuth("network")).rejects.toThrow(/authentication failed/i);
+    expect(isVerificationFresh(CREDS.email)).toBe(false);
   });
 
   it("network mode: reachable server says invalid → throws (session expired), not graced", async () => {
@@ -74,6 +92,13 @@ describe("requireAuth — offline-grace modes", () => {
     mockVerify.mockResolvedValue({ valid: false, email: CREDS.email });
     await expect(requireAuth("network")).rejects.toThrow(/session expired/i);
     expect(isVerificationFresh(CREDS.email)).toBe(false);
+  });
+
+  it("CI token (no stored credential) + NETWORK_ERROR → fails loudly (no grace)", async () => {
+    mockLoad.mockReturnValue(null);
+    process.env.TRANSIA_TOKEN = "ci-tok";
+    mockVerify.mockRejectedValue(new TransiaError(ExitCode.NETWORK_ERROR, "offline"));
+    await expect(requireAuth("network")).rejects.toThrow(/offline|could not verify/i);
   });
 
   it("defaults to network mode", async () => {
