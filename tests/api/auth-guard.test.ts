@@ -62,9 +62,8 @@ describe("requireAuth — offline-grace modes", () => {
     expect(isVerificationFresh(CREDS.email)).toBe(true); // recorded
   });
 
-  it("network mode: NETWORK_ERROR from verifyAuth + local credential → proceeds offline", async () => {
-    // apiRequest throws TransiaError(NETWORK_ERROR) on a real fetch failure/timeout —
-    // the grace must key off the ExitCode, not off "is it a TransiaError".
+  it("network mode: transport failure (NETWORK_ERROR, no HTTP status) + credential → proceeds offline", async () => {
+    // apiRequest's fetch-threw/timeout catch throws NETWORK_ERROR with NO status.
     mockLoad.mockReturnValue(CREDS);
     mockVerify.mockRejectedValue(new TransiaError(ExitCode.NETWORK_ERROR, "offline"));
     await expect(requireAuth("network")).resolves.toBeUndefined();
@@ -78,13 +77,43 @@ describe("requireAuth — offline-grace modes", () => {
     await expect(requireAuth("network")).resolves.toBeUndefined();
   });
 
+  it("network mode: server-side 5xx (reachable but erroring) + credential → proceeds offline", async () => {
+    mockLoad.mockReturnValue(CREDS);
+    mockVerify.mockRejectedValue(
+      new TransiaError(ExitCode.NETWORK_ERROR, "API error (503)", { status: 503 }),
+    );
+    await expect(requireAuth("network")).resolves.toBeUndefined();
+  });
+
+  it("network mode: reachable 4xx rejection (403, e.g. deactivated) → throws, NOT graced", async () => {
+    // The sharp case: a reachable server giving a definitive "no" must fail, not
+    // be papered over as "offline" (which would let a deactivated BYOK user keep going).
+    mockLoad.mockReturnValue(CREDS);
+    mockVerify.mockRejectedValue(
+      new TransiaError(ExitCode.NETWORK_ERROR, "API error (403): forbidden", { status: 403 }),
+    );
+    await expect(requireAuth("network")).rejects.toThrow(/403|forbidden/i);
+    expect(isVerificationFresh(CREDS.email)).toBe(false);
+  });
+
   it("network mode: AUTH_ERROR from verifyAuth (401) → throws, NOT graced", async () => {
     mockLoad.mockReturnValue(CREDS);
     mockVerify.mockRejectedValue(
-      new TransiaError(ExitCode.AUTH_ERROR, "Authentication failed."),
+      new TransiaError(ExitCode.AUTH_ERROR, "Authentication failed.", { status: 401 }),
     );
     await expect(requireAuth("network")).rejects.toThrow(/authentication failed/i);
     expect(isVerificationFresh(CREDS.email)).toBe(false);
+  });
+
+  it("network mode: a CI/env token bypasses the stored-credential cache", async () => {
+    // Finding 3: TRANSIA_TOKEN may be a different account than the stored credential,
+    // so a fresh marker for the stored email must NOT let the env token skip verify.
+    mockLoad.mockReturnValue(CREDS);
+    recordVerification(CREDS.email); // stored creds look fresh
+    process.env.TRANSIA_TOKEN = "ci-tok";
+    mockVerify.mockResolvedValue({ valid: true, email: "ci@example.com" });
+    await expect(requireAuth("network")).resolves.toBeUndefined();
+    expect(mockVerify).toHaveBeenCalledTimes(1); // cache skipped → verified anyway
   });
 
   it("network mode: reachable server says invalid → throws (session expired), not graced", async () => {

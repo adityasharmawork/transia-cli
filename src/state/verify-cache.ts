@@ -26,9 +26,7 @@ export interface VerifyCache {
 }
 
 function transiaDir(): string {
-  const dir = join(homedir(), ".transia");
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-  return dir;
+  return join(homedir(), ".transia");
 }
 
 function cachePath(): string {
@@ -47,7 +45,10 @@ export function isFresh(
   if (!cache || cache.email !== email) return false;
   const verifiedAt = Date.parse(cache.verifiedAt);
   if (Number.isNaN(verifiedAt)) return false;
-  return now.getTime() - verifiedAt < TTL_MS;
+  const age = now.getTime() - verifiedAt;
+  // `age >= 0` floors out a future timestamp (tampered file / clock moved back),
+  // so a stamp "ahead" of now counts as stale and forces a re-verify.
+  return age >= 0 && age < TTL_MS;
 }
 
 export function readVerifyCache(): VerifyCache | null {
@@ -73,6 +74,7 @@ export function readVerifyCache(): VerifyCache | null {
 export function recordVerification(email: string, now: Date = new Date()): void {
   const payload: VerifyCache = { v: 1, verifiedAt: now.toISOString(), email };
   try {
+    mkdirSync(transiaDir(), { recursive: true, mode: 0o700 });
     writeFileSync(cachePath(), JSON.stringify(payload), { mode: 0o600 });
   } catch {
     // A cache write failure (e.g. read-only HOME) must never block the command.

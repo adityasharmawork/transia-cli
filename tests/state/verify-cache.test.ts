@@ -36,6 +36,11 @@ describe("verify-cache — pure isFresh", () => {
     expect(isFresh(null, EMAIL, new Date())).toBe(false);
     expect(isFresh({ v: 1, verifiedAt: "not-a-date", email: EMAIL }, EMAIL, new Date())).toBe(false);
   });
+
+  it("treats a FUTURE timestamp as stale (tampered file / clock moved back)", () => {
+    expect(isFresh(base, EMAIL, at(base, -1000))).toBe(false); // now is before verifiedAt
+    expect(isFresh(base, EMAIL, at(base, -TTL_MS * 10))).toBe(false);
+  });
 });
 
 describe("verify-cache — fs round-trip (isolated $HOME)", () => {

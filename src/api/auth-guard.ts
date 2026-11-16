@@ -34,8 +34,12 @@ export async function requireAuth(mode: AuthMode = "network"): Promise<void> {
   }
 
   // Trust a recent server confirmation before re-verifying (keyed by email).
+  // Skip the cache entirely when a CI/env token is in use: `verifyAuth` sends
+  // that token, which may belong to a different account than the stored
+  // credential, so it must not read or write that credential's freshness marker.
+  const usingEnvToken = !!process.env.TRANSIA_TOKEN;
   const email = credentials?.email;
-  if (email && isVerificationFresh(email)) {
+  if (email && !usingEnvToken && isVerificationFresh(email)) {
     logger.debug("Session verified recently — skipping network check.");
     return;
   }
@@ -48,26 +52,34 @@ export async function requireAuth(mode: AuthMode = "network"): Promise<void> {
         `Session expired. Run ${chalk.cyan("transia login")} to re-authenticate.`,
       );
     }
-    if (email) recordVerification(email);
+    if (email && !usingEnvToken) recordVerification(email);
     logger.debug(`Authenticated as ${result.email}`);
   } catch (error) {
-    // A definitive "invalid session" answer must fail — don't paper over a real
-    // logout. `verifyAuth` (via apiRequest) throws AUTH_ERROR for an expired
-    // session / 401; the `!result.valid` branch above throws AUTH_ERROR too.
-    if (error instanceof TransiaError && error.code === ExitCode.AUTH_ERROR) {
-      throw error;
-    }
-    // Everything else means we couldn't get a definitive answer — a network
-    // error, a timeout, or a server 5xx (all surface as NETWORK_ERROR from
-    // apiRequest). With a local credential, proceed offline; anything that truly
-    // needs the network surfaces its own error at the actual call.
+    // A reachable server's DEFINITIVE rejection must fail — never papered over as
+    // "offline". That is an expired/invalid session (AUTH_ERROR, incl. 401) or any
+    // other client rejection (4xx, e.g. 403 for a deactivated account). apiRequest
+    // carries the HTTP status in `details.status`; a transport failure / timeout
+    // has no status, and a server-side 5xx is not a session rejection.
+    const status =
+      error instanceof TransiaError && typeof error.details?.status === "number"
+        ? error.details.status
+        : undefined;
+    const definitiveReject =
+      (error instanceof TransiaError && error.code === ExitCode.AUTH_ERROR) ||
+      (status !== undefined && status >= 400 && status < 500);
+    if (definitiveReject) throw error;
+
+    // Otherwise we couldn't get a definitive answer — the server was unreachable
+    // (fetch threw / timed out → no status) or errored server-side (5xx). With a
+    // local credential, proceed offline; anything that truly needs the network
+    // surfaces its own error at the actual call.
     if (credentials) {
       logger.warn(
         "Could not reach Transia to verify your session; proceeding offline.",
       );
       return;
     }
-    // CI token with no stored credential and no network — fail loudly.
+    // CI token with no stored credential and no usable answer — fail loudly.
     if (error instanceof TransiaError) throw error;
     throw new TransiaError(
       ExitCode.NETWORK_ERROR,

@@ -114,12 +114,16 @@ export async function apiRequest<T>(
       throw new TransiaError(
         ExitCode.AUTH_ERROR,
         "Authentication failed. Run `transia login` to re-authenticate.",
+        { status: 401 },
       );
     }
     const error = await res.json().catch(() => ({ error: "Unknown error" }));
+    // Carry the HTTP status so callers can tell a reachable server's definitive
+    // rejection (4xx) from a server-side/transport failure (5xx / fetch threw).
     throw new TransiaError(
       ExitCode.NETWORK_ERROR,
       `API error (${res.status}): ${error.error || res.statusText}`,
+      { status: res.status },
     );
   }
 

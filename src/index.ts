@@ -179,7 +179,7 @@ program
   .option("-v, --verbose", "Enable debug logging")
   .action(async (options) => {
     try {
-      await requireAuth();
+      await requireAuth("local"); // setup only scaffolds files + runs npm — no Transia network
       await setupCommand(process.cwd(), options);
     } catch (error) {
       handleError(error);
