@@ -127,7 +127,7 @@ program
   .description("Show translation coverage for all target locales")
   .action(async () => {
     try {
-      await requireAuth();
+      await requireAuth("local"); // status reads local state only — no network
       await statusCommand(process.cwd());
     } catch (error) {
       handleError(error);
@@ -141,7 +141,7 @@ program
   .option("--output", "Also delete generated translation files")
   .action(async (options) => {
     try {
-      await requireAuth();
+      await requireAuth("local"); // reset only deletes local state/output — no network
       await resetCommand(process.cwd(), options);
     } catch (error) {
       handleError(error);
@@ -159,7 +159,7 @@ program
   .option("-v, --verbose", "Enable debug logging")
   .action(async (options) => {
     try {
-      await requireAuth();
+      await requireAuth("local"); // apply rewrites local source files — no network
       await applyCommand(process.cwd(), options);
     } catch (error) {
       handleError(error);
@@ -179,7 +179,7 @@ program
   .option("-v, --verbose", "Enable debug logging")
   .action(async (options) => {
     try {
-      await requireAuth();
+      await requireAuth("local"); // setup only scaffolds files + runs npm — no Transia network
       await setupCommand(process.cwd(), options);
     } catch (error) {
       handleError(error);
@@ -194,7 +194,7 @@ program
   .option("-v, --verbose", "Enable debug logging")
   .action(async (options) => {
     try {
-      await requireAuth();
+      await requireAuth("local"); // widget generates a local component — no network
       await widgetCommand(process.cwd(), options);
     } catch (error) {
       handleError(error);
