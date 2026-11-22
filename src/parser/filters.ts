@@ -59,6 +59,7 @@ export function isTranslatableAttribute(attrName: string): boolean {
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const URL_REGEX = /^(https?:\/\/|mailto:|tel:|ftp:\/\/)/i;
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const FILE_PATH_REGEX = /^[./\\].*\.[a-zA-Z]{1,5}$/;
 const ALL_CAPS_REGEX = /^[A-Z][A-Z0-9_]{2,}$/;
 const CSS_CLASS_REGEX =
@@ -83,6 +84,10 @@ export function isTranslatableString(value: string): boolean {
 
   // Skip URLs
   if (URL_REGEX.test(trimmed)) return false;
+
+  // Skip bare email addresses (example placeholders like you@company.com) —
+  // data, not prose; translating one corrupts it.
+  if (EMAIL_REGEX.test(trimmed)) return false;
 
   // Skip file paths
   if (FILE_PATH_REGEX.test(trimmed)) return false;
