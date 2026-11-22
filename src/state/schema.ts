@@ -18,7 +18,8 @@ export const TransiaConfigSchema = z.object({
   version: z.number().int().min(1),
   sourceLocale: z
     .string()
-    .refine(isValidLocale, "Invalid source locale (use a BCP-47 tag like 'en', 'en-US', 'zh-Hans')"),
+    .refine(isValidLocale, "Invalid source locale (use a BCP-47 tag like 'en', 'en-US', 'zh-Hans')")
+    .transform((t) => Intl.getCanonicalLocales(t)[0]),
   targetLocales: z
     .array(
       z
@@ -26,9 +27,13 @@ export const TransiaConfigSchema = z.object({
         .refine(isValidLocale, "Invalid locale tag (use a BCP-47 tag like 'es', 'en-US', 'zh-Hans', 'es-419')"),
     )
     .min(1)
+    // Canonicalize each tag (EN -> en, es-mx -> es-MX) so output dir names are
+    // stable, and case/format variants can't create duplicate dirs — which would
+    // collide on a case-insensitive filesystem (macOS). Dedup runs post-canonical.
+    .transform((arr) => arr.map((t) => Intl.getCanonicalLocales(t)[0]))
     .refine(
       (arr) => new Set(arr).size === arr.length,
-      "Duplicate locales are not allowed",
+      "Duplicate locales are not allowed (including tags that canonicalize to the same locale, e.g. 'en' and 'EN')",
     ),
   provider: ProviderConfigSchema,
   providerPriority: z
