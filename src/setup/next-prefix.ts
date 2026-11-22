@@ -385,15 +385,32 @@ export function transformLayoutForPrefix(
   // Find <html> and <body> inside the component.
   let htmlOpen: any = null;
   let bodyEl: any = null;
+  let htmlCount = 0;
+  let bodyCount = 0;
   traverse(ast, {
     JSXElement(path: any) {
       if (path.node.start < fnNode.start || path.node.end > fnNode.end) return;
       const name = path.node.openingElement?.name;
       const tag = name?.type === "JSXIdentifier" ? name.name : null;
-      if (tag === "html") htmlOpen = path.node.openingElement;
-      if (tag === "body") bodyEl = path.node;
+      if (tag === "html") {
+        htmlOpen = path.node.openingElement;
+        htmlCount++;
+      }
+      if (tag === "body") {
+        bodyEl = path.node;
+        bodyCount++;
+      }
     },
   });
+  // Multiple <html>/<body> means conditional branches; a last-write-wins edit
+  // would adapt only one branch and leave the others broken, so refuse.
+  if (htmlCount > 1 || bodyCount > 1) {
+    return {
+      wrapped: false,
+      reason:
+        "layout renders multiple <html>/<body> elements (conditional layout); wrap it manually",
+    };
+  }
   if (!htmlOpen || !bodyEl) {
     return { wrapped: false, reason: "layout does not render <html> and <body>" };
   }

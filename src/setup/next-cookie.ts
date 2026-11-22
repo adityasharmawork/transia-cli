@@ -122,15 +122,33 @@ export function wrapLayoutForNextIntl(source: string): LayoutWrapResult {
   // Find <html> and <body> inside that component.
   let htmlOpen: any = null;
   let bodyEl: any = null;
+  let htmlCount = 0;
+  let bodyCount = 0;
   traverse(ast, {
     JSXElement(path: any) {
       if (path.node.start < fnNode.start || path.node.end > fnNode.end) return;
       const name = path.node.openingElement?.name;
       const tag = name?.type === "JSXIdentifier" ? name.name : null;
-      if (tag === "html") htmlOpen = path.node.openingElement;
-      if (tag === "body") bodyEl = path.node;
+      if (tag === "html") {
+        htmlOpen = path.node.openingElement;
+        htmlCount++;
+      }
+      if (tag === "body") {
+        bodyEl = path.node;
+        bodyCount++;
+      }
     },
   });
+  // Multiple <html>/<body> means conditional branches (e.g. a maintenance
+  // layout). A last-write-wins edit would transform only one branch and leave
+  // the others broken, so refuse and let the caller print a manual snippet.
+  if (htmlCount > 1 || bodyCount > 1) {
+    return {
+      wrapped: false,
+      reason:
+        "layout renders multiple <html>/<body> elements (conditional layout); wrap it manually",
+    };
+  }
   if (!htmlOpen || !bodyEl) {
     return { wrapped: false, reason: "layout does not render <html> and <body>" };
   }
@@ -195,15 +213,33 @@ export function wrapLayoutForNextIntl(source: string): LayoutWrapResult {
   return { output, wrapped: true };
 }
 
+/** A function-form config (`phase => config`) that next-intl's withNextIntl
+ * can't wrap — it reads its argument as a config object, not a factory. */
+function isFunctionNode(node: any): boolean {
+  return (
+    node?.type === "ArrowFunctionExpression" ||
+    node?.type === "FunctionExpression" ||
+    node?.type === "FunctionDeclaration"
+  );
+}
+
+/** True when an identifier's binding resolves to a function — so a default
+ * export (or module.exports) of that identifier is really a function config. */
+function bindingIsFunction(node: any): boolean {
+  if (!node) return false;
+  if (node.type === "FunctionDeclaration") return true;
+  if (node.type === "VariableDeclarator") return isFunctionNode(node.init);
+  return false;
+}
+
 /**
  * Add the next-intl plugin to a next.config file so it loads i18n/request.ts.
  * Wraps the default export (ESM) or module.exports (CJS) in
  * `withNextIntl(...)`. Idempotent; returns `changed:false` for a shape it can't
- * confidently rewrite so the caller can print manual instructions.
+ * confidently rewrite — including a function-form config (`phase => config`),
+ * which next-intl can't wrap — so the caller can print manual instructions.
  */
 export function addNextIntlPlugin(source: string): { output: string; changed: boolean } {
-  if (source.includes("next-intl/plugin")) return { output: source, changed: false };
-
   let ast;
   try {
     ast = parseModule(source);
@@ -211,22 +247,54 @@ export function addNextIntlPlugin(source: string): { output: string; changed: bo
     return { output: source, changed: false };
   }
 
+  // Idempotency by AST, not substring: a real prior run leaves an
+  // `import ... from "next-intl/plugin"` (or a `require("next-intl/plugin")`).
+  // A comment or string that merely names the module must NOT count, or setup
+  // would silently no-op on a config that only mentions it.
+  let alreadyInstalled = false;
+  traverse(ast, {
+    ImportDeclaration(path: any) {
+      if (path.node.source?.value === "next-intl/plugin") alreadyInstalled = true;
+    },
+    CallExpression(path: any) {
+      const callee = path.node.callee;
+      const arg0 = path.node.arguments?.[0];
+      if (
+        callee?.type === "Identifier" &&
+        callee.name === "require" &&
+        arg0?.type === "StringLiteral" &&
+        arg0.value === "next-intl/plugin"
+      ) {
+        alreadyInstalled = true;
+      }
+    },
+  });
+  if (alreadyInstalled) return { output: source, changed: false };
+
   let statementStart: number | null = null;
   let declStart: number | null = null;
   let declEnd: number | null = null;
+  // A function-form config can't be wrapped by withNextIntl — refuse it.
+  let functionForm = false;
 
   traverse(ast, {
     ExportDefaultDeclaration(path: any) {
-      if (statementStart !== null) return;
+      if (statementStart !== null || functionForm) return;
       const d = path.node.declaration;
-      if (d?.start != null && d?.end != null) {
-        statementStart = path.node.start;
-        declStart = d.start;
-        declEnd = d.end;
+      if (d?.start == null || d?.end == null) return;
+      if (
+        isFunctionNode(d) ||
+        (d.type === "Identifier" && bindingIsFunction(path.scope.getBinding(d.name)?.path?.node))
+      ) {
+        functionForm = true;
+        return;
       }
+      statementStart = path.node.start;
+      declStart = d.start;
+      declEnd = d.end;
     },
     AssignmentExpression(path: any) {
-      if (statementStart !== null) return;
+      if (statementStart !== null || functionForm) return;
       const l = path.node.left;
       if (
         l?.type === "MemberExpression" &&
@@ -236,15 +304,22 @@ export function addNextIntlPlugin(source: string): { output: string; changed: bo
         l.property.name === "exports"
       ) {
         const r = path.node.right;
-        if (r?.start != null && r?.end != null) {
-          statementStart = path.parentPath?.node?.start ?? path.node.start;
-          declStart = r.start;
-          declEnd = r.end;
+        if (r?.start == null || r?.end == null) return;
+        if (
+          isFunctionNode(r) ||
+          (r.type === "Identifier" && bindingIsFunction(path.scope.getBinding(r.name)?.path?.node))
+        ) {
+          functionForm = true;
+          return;
         }
+        statementStart = path.parentPath?.node?.start ?? path.node.start;
+        declStart = r.start;
+        declEnd = r.end;
       }
     },
   });
 
+  if (functionForm) return { output: source, changed: false };
   if (statementStart === null || declStart === null || declEnd === null) {
     return { output: source, changed: false };
   }

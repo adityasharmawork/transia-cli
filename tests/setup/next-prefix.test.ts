@@ -221,6 +221,26 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     );
     expect(r.wrapped).toBe(false);
   });
+
+  it("refuses a layout with two conditional <html> branches (review #5)", () => {
+    const src = `export default function RootLayout({ children }: { children: React.ReactNode }) {
+  if (process.env.MAINTENANCE) {
+    return (
+      <html>
+        <body>{children}</body>
+      </html>
+    );
+  }
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  );
+}`;
+    const r = transformLayoutForPrefix(src);
+    expect(r.wrapped).toBe(false);
+    if (!r.wrapped) expect(r.reason).toMatch(/multiple|conditional/i);
+  });
 });
 
 describe("metadataHelperModule", () => {
