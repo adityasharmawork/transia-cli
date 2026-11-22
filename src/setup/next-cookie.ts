@@ -232,6 +232,23 @@ function bindingIsFunction(node: any): boolean {
   return false;
 }
 
+/** Peel TS-only wrapper expressions (`as`, `satisfies`, `!`, parens) so we can
+ * classify the value underneath — e.g. `(phase => cfg) satisfies NextConfig`
+ * is still a function config, hidden one `.expression` below. */
+function unwrapTs(node: any): any {
+  let n = node;
+  while (
+    n &&
+    (n.type === "TSAsExpression" ||
+      n.type === "TSSatisfiesExpression" ||
+      n.type === "TSNonNullExpression" ||
+      n.type === "ParenthesizedExpression")
+  ) {
+    n = n.expression;
+  }
+  return n;
+}
+
 /**
  * Add the next-intl plugin to a next.config file so it loads i18n/request.ts.
  * Wraps the default export (ESM) or module.exports (CJS) in
@@ -239,12 +256,16 @@ function bindingIsFunction(node: any): boolean {
  * confidently rewrite — including a function-form config (`phase => config`),
  * which next-intl can't wrap — so the caller can print manual instructions.
  */
-export function addNextIntlPlugin(source: string): { output: string; changed: boolean } {
+export function addNextIntlPlugin(source: string): {
+  output: string;
+  changed: boolean;
+  alreadyInstalled: boolean;
+} {
   let ast;
   try {
     ast = parseModule(source);
   } catch {
-    return { output: source, changed: false };
+    return { output: source, changed: false, alreadyInstalled: false };
   }
 
   // Idempotency by AST, not substring: a real prior run leaves an
@@ -269,7 +290,7 @@ export function addNextIntlPlugin(source: string): { output: string; changed: bo
       }
     },
   });
-  if (alreadyInstalled) return { output: source, changed: false };
+  if (alreadyInstalled) return { output: source, changed: false, alreadyInstalled: true };
 
   let statementStart: number | null = null;
   let declStart: number | null = null;
@@ -282,9 +303,11 @@ export function addNextIntlPlugin(source: string): { output: string; changed: bo
       if (statementStart !== null || functionForm) return;
       const d = path.node.declaration;
       if (d?.start == null || d?.end == null) return;
+      const inner = unwrapTs(d);
       if (
-        isFunctionNode(d) ||
-        (d.type === "Identifier" && bindingIsFunction(path.scope.getBinding(d.name)?.path?.node))
+        isFunctionNode(inner) ||
+        (inner?.type === "Identifier" &&
+          bindingIsFunction(path.scope.getBinding(inner.name)?.path?.node))
       ) {
         functionForm = true;
         return;
@@ -305,9 +328,11 @@ export function addNextIntlPlugin(source: string): { output: string; changed: bo
       ) {
         const r = path.node.right;
         if (r?.start == null || r?.end == null) return;
+        const innerR = unwrapTs(r);
         if (
-          isFunctionNode(r) ||
-          (r.type === "Identifier" && bindingIsFunction(path.scope.getBinding(r.name)?.path?.node))
+          isFunctionNode(innerR) ||
+          (innerR?.type === "Identifier" &&
+            bindingIsFunction(path.scope.getBinding(innerR.name)?.path?.node))
         ) {
           functionForm = true;
           return;
@@ -319,9 +344,9 @@ export function addNextIntlPlugin(source: string): { output: string; changed: bo
     },
   });
 
-  if (functionForm) return { output: source, changed: false };
+  if (functionForm) return { output: source, changed: false, alreadyInstalled: false };
   if (statementStart === null || declStart === null || declEnd === null) {
-    return { output: source, changed: false };
+    return { output: source, changed: false, alreadyInstalled: false };
   }
 
   const directivesEnd =
@@ -344,12 +369,12 @@ export function addNextIntlPlugin(source: string): { output: string; changed: bo
   try {
     output = buildEdit(source, [], insertions);
   } catch {
-    return { output: source, changed: false };
+    return { output: source, changed: false, alreadyInstalled: false };
   }
   try {
     parse(output, { sourceType: "module", plugins: ["jsx", "typescript", "decorators-legacy"] });
   } catch {
-    return { output: source, changed: false };
+    return { output: source, changed: false, alreadyInstalled: false };
   }
-  return { output, changed: true };
+  return { output, changed: true, alreadyInstalled: false };
 }
