@@ -242,7 +242,7 @@ function setupNextIntl(
       } else {
         skipped.push(`${rel(nextConfigPath)} — plugin edit did not re-parse; add it manually.`);
       }
-    } else if (!current.includes("next-intl/plugin")) {
+    } else if (!r.alreadyInstalled) {
       skipped.push(
         `${rel(nextConfigPath)} — wrap your config export in createNextIntlPlugin("./i18n/request.ts") manually.`,
       );
@@ -547,7 +547,7 @@ export function setupNextIntlPrefix(
         // untracked backup would leave the tree dirty and trap the next --move.
         artifacts.push(backupPath);
       }
-    } else if (!current.includes("next-intl/plugin")) {
+    } else if (!r.alreadyInstalled) {
       skipped.push(
         `${relative(projectRoot, nextConfigPath)} — wrap your config in createNextIntlPlugin("./i18n/request.ts") manually.`,
       );

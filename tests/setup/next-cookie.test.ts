@@ -132,3 +132,122 @@ export default nextConfig;
     expect(addNextIntlPlugin(`const x = 1;\n`).changed).toBe(false);
   });
 });
+
+describe("addNextIntlPlugin — function-form configs (review #3)", () => {
+  // next-intl's withNextIntl(nextConfig) reads nextConfig as an OBJECT
+  // (getNextConfig looks at nextConfig?.i18n; no typeof === 'function' branch).
+  // Wrapping a function-form config would silently drop the user's config factory,
+  // so these shapes must be refused (changed:false) and left for a manual snippet.
+  it("refuses a function-declaration default export", () => {
+    const src = `export default function (phase) {\n  return { reactStrictMode: true };\n}\n`;
+    const r = addNextIntlPlugin(src);
+    expect(r.changed).toBe(false);
+    expect(r.output).toBe(src);
+  });
+
+  it("refuses an arrow-function default export", () => {
+    const src = `export default (phase) => ({ reactStrictMode: true });\n`;
+    expect(addNextIntlPlugin(src).changed).toBe(false);
+  });
+
+  it("refuses a default export that resolves to a function via an identifier", () => {
+    const src = `const nextConfig = (phase) => ({ reactStrictMode: true });\nexport default nextConfig;\n`;
+    expect(addNextIntlPlugin(src).changed).toBe(false);
+  });
+
+  it("refuses a CJS function config (module.exports = () => ({...}))", () => {
+    const src = `module.exports = () => ({ reactStrictMode: true });\n`;
+    expect(addNextIntlPlugin(src).changed).toBe(false);
+  });
+
+  it("still wraps a composed plugin CALL (withSentry(...)) — not a function config", () => {
+    const src = `import { withSentry } from "@sentry/nextjs";\nexport default withSentry({ reactStrictMode: true });\n`;
+    const r = addNextIntlPlugin(src);
+    expect(r.changed).toBe(true);
+    expect(r.output).toContain("withNextIntl(withSentry(");
+    expect(parseOk(r.output)).toBe(true);
+  });
+});
+
+describe("addNextIntlPlugin — AST idempotency (review #4)", () => {
+  it("does NOT treat a comment mentioning next-intl/plugin as an existing install", () => {
+    const src = `// we deliberately don't use next-intl/plugin here\nexport default { reactStrictMode: true };\n`;
+    const r = addNextIntlPlugin(src);
+    expect(r.changed).toBe(true);
+    expect(r.output).toContain('createNextIntlPlugin("./i18n/request.ts")');
+    expect(parseOk(r.output)).toBe(true);
+  });
+
+  it("still skips when the plugin is actually imported (real prior run)", () => {
+    const src = `import createNextIntlPlugin from "next-intl/plugin";\nconst withNextIntl = createNextIntlPlugin("./i18n/request.ts");\nexport default withNextIntl({ reactStrictMode: true });\n`;
+    expect(addNextIntlPlugin(src).changed).toBe(false);
+  });
+});
+
+describe("addNextIntlPlugin — TS-wrapped function configs (review #3 follow-up)", () => {
+  // `satisfies`/`as`/`!` wrap the config in a TS expression node; the function
+  // hides one `.expression` below, so the guard must unwrap before classifying.
+  it("refuses a function config reached through an identifier + `satisfies`", () => {
+    const src = `const nextConfig = (phase) => ({ reactStrictMode: true });\nexport default nextConfig satisfies unknown;\n`;
+    expect(addNextIntlPlugin(src).changed).toBe(false);
+  });
+
+  it("refuses an inline arrow config wrapped in `satisfies`", () => {
+    const src = `export default ((phase) => ({ reactStrictMode: true })) satisfies unknown;\n`;
+    expect(addNextIntlPlugin(src).changed).toBe(false);
+  });
+
+  it("refuses an inline arrow config wrapped in `as`", () => {
+    const src = `export default ((phase) => ({ reactStrictMode: true })) as any;\n`;
+    expect(addNextIntlPlugin(src).changed).toBe(false);
+  });
+
+  it("still wraps an OBJECT config wrapped in `satisfies` (not a function)", () => {
+    const src = `const nextConfig = { reactStrictMode: true };\nexport default nextConfig satisfies unknown;\n`;
+    const r = addNextIntlPlugin(src);
+    expect(r.changed).toBe(true);
+    expect(parseOk(r.output)).toBe(true);
+  });
+});
+
+describe("addNextIntlPlugin — distinguishes 'already installed' from 'refused' (review #4 follow-up)", () => {
+  it("reports alreadyInstalled:true only for a real prior run", () => {
+    const installed = `import createNextIntlPlugin from "next-intl/plugin";\nconst withNextIntl = createNextIntlPlugin("./i18n/request.ts");\nexport default withNextIntl({ reactStrictMode: true });\n`;
+    expect(addNextIntlPlugin(installed).alreadyInstalled).toBe(true);
+  });
+
+  it("reports alreadyInstalled:false when it REFUSES a function-form config (caller must still print guidance)", () => {
+    const fn = `export default (phase) => ({ reactStrictMode: true });\n`;
+    const r = addNextIntlPlugin(fn);
+    expect(r.changed).toBe(false);
+    expect(r.alreadyInstalled).toBe(false);
+  });
+
+  it("reports alreadyInstalled:false when the module name appears only in a comment", () => {
+    const commented = `// not using next-intl/plugin\nexport default (phase) => ({ reactStrictMode: true });\n`;
+    expect(addNextIntlPlugin(commented).alreadyInstalled).toBe(false);
+  });
+});
+
+describe("wrapLayoutForNextIntl — multiple <html> (review #5)", () => {
+  it("refuses a layout that renders two conditional <html> branches", () => {
+    const src = `export default function RootLayout({ children }: { children: React.ReactNode }) {
+  if (process.env.MAINTENANCE) {
+    return (
+      <html>
+        <body>{children}</body>
+      </html>
+    );
+  }
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  );
+}
+`;
+    const r = wrapLayoutForNextIntl(src);
+    expect(r.wrapped).toBe(false);
+    expect((r as { reason: string }).reason).toMatch(/multiple|conditional/i);
+  });
+});
