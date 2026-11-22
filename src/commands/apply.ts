@@ -36,13 +36,21 @@ export interface TransformResult {
 function buildReplacement(c: Candidate, tName: string, source: string): string {
   const key = generateKey(c.sanitized, c.hash);
 
-  if (c.role === "template") {
-    const parts = (c.interpolations ?? []).map(
-      (i) => `${i.name}: ${source.slice(i.exprStart, i.exprEnd)}`,
-    );
-    return parts.length > 0
-      ? `${tName}("${key}", { ${parts.join(", ")} })`
-      : `${tName}("${key}")`;
+  if (c.role === "template" || c.role === "jsx-compound") {
+    const seen = new Set<string>();
+    const parts: string[] = [];
+    for (const i of c.interpolations ?? []) {
+      if (seen.has(i.name)) continue; // one values key per placeholder name
+      seen.add(i.name);
+      parts.push(`${i.name}: ${source.slice(i.exprStart, i.exprEnd)}`);
+    }
+    const callExpr =
+      parts.length > 0
+        ? `${tName}("${key}", { ${parts.join(", ")} })`
+        : `${tName}("${key}")`;
+    // A template literal already sits inside its own `{…}` expression container;
+    // a compound run replaces raw JSX children, so it needs wrapping braces.
+    return c.role === "jsx-compound" ? `{${callExpr}}` : callExpr;
   }
 
   const call = `${tName}("${key}")`;

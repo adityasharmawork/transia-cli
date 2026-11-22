@@ -133,3 +133,85 @@ describe("recordCandidates — auto role/attribute context", () => {
     expect(ac(`function A(){ return <Card>Custom body text here</Card>; }`, "Custom body text here")).toBeUndefined();
   });
 });
+
+describe("recordCandidates — compound interpolation (F5)", () => {
+  it("joins text + {expr} + text siblings into one ICU message", () => {
+    const src = `function A(){ const userName='x'; return <p>Welcome back, {userName}!</p>; }`;
+    const cands = recordCandidates(src, "A.tsx");
+    const c = find(cands, "Welcome back, {userName}!");
+    expect(c).toBeDefined();
+    expect(c!.role).toBe("jsx-compound");
+    expect(c!.interpolations?.map((i) => i.name)).toEqual(["userName"]);
+    expect(src.slice(c!.interpolations![0].exprStart, c!.interpolations![0].exprEnd)).toBe(
+      "userName",
+    );
+    expect(src.slice(c!.start, c!.end)).toBe("Welcome back, {userName}!");
+    // must NOT also emit the truncated fragment
+    expect(find(cands, "Welcome back,")).toBeUndefined();
+  });
+
+  it("handles an interpolation in the middle of the sentence", () => {
+    const src = `function A(){ const count=3; return <p>You have {count} new messages</p>; }`;
+    const c = find(recordCandidates(src, "A.tsx"), "You have {count} new messages");
+    expect(c).toBeDefined();
+    expect(c!.role).toBe("jsx-compound");
+    expect(c!.interpolations?.[0].name).toBe("count");
+  });
+
+  it("uses the member-expression property as the placeholder name, value slices to the full expr", () => {
+    const src = `function A(){ return <p>Hi {user.firstName}</p>; }`;
+    const c = find(recordCandidates(src, "A.tsx"), "Hi {firstName}");
+    expect(c).toBeDefined();
+    expect(c!.role).toBe("jsx-compound");
+    expect(c!.interpolations?.[0].name).toBe("firstName");
+    expect(src.slice(c!.interpolations![0].exprStart, c!.interpolations![0].exprEnd)).toBe(
+      "user.firstName",
+    );
+  });
+
+  it("does NOT form a compound when a nested element is present (F4 territory) — falls back", () => {
+    const src = `function A(){ const x=1; return <p>Agree to <a href="/t">Terms</a> {x}</p>; }`;
+    const cands = recordCandidates(src, "A.tsx");
+    expect(cands.find((c) => c.role === "jsx-compound")).toBeUndefined();
+    expect(find(cands, "Agree to")).toBeDefined();
+    expect(find(cands, "Terms")).toBeDefined();
+  });
+
+  it("does NOT form a compound when an expression is not a simple interpolation — falls back", () => {
+    const src = `function A(){ const x=1; return <p>Total {format(x)}</p>; }`;
+    const cands = recordCandidates(src, "A.tsx");
+    expect(cands.find((c) => c.role === "jsx-compound")).toBeUndefined();
+    expect(find(cands, "Total")).toBeDefined();
+  });
+
+  it("assembles a multi-line interpolated sentence and leaves surrounding indentation outside the span", () => {
+    const src = [
+      "function A(){ const userName='x'; return (",
+      "  <p>",
+      "    Welcome back, {userName}!",
+      "  </p>",
+      "); }",
+    ].join("\n");
+    const c = find(recordCandidates(src, "A.tsx"), "Welcome back, {userName}!");
+    expect(c).toBeDefined();
+    expect(c!.role).toBe("jsx-compound");
+    expect(src.slice(c!.start, c!.end)).toBe("Welcome back, {userName}!");
+  });
+
+  it("handles an interpolation at the start of the message", () => {
+    const c = find(
+      recordCandidates(`function A(){ const count=3; return <p>{count} items left</p>; }`, "A.tsx"),
+      "{count} items left",
+    );
+    expect(c).toBeDefined();
+    expect(c!.role).toBe("jsx-compound");
+  });
+
+  it("keeps the element role hint for a compound message (button label)", () => {
+    const c = find(
+      recordCandidates(`function A(){ const label='x'; return <button>Save {label}</button>; }`, "A.tsx"),
+      "Save {label}",
+    );
+    expect(c?.autoContext).toBe("button label");
+  });
+});

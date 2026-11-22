@@ -14,7 +14,11 @@ export type CandidateRole =
   | "jsx-attr"
   | "jsx-expr-string"
   | "conditional"
-  | "template";
+  | "template"
+  // A run of sibling JSX children — text interleaved with simple `{expr}`
+  // interpolations — joined into ONE ICU message (e.g. `Welcome back, {userName}!`).
+  // Carries `interpolations`; applied as `{t("key", { name: expr })}`. (F5)
+  | "jsx-compound";
 
 /**
  * A single translatable site in a source file, identified by its exact byte
@@ -306,6 +310,131 @@ function enclosingComponentPath(path: any): string {
   return fallback;
 }
 
+/**
+ * Collapse JSX-insignificant whitespace — any run containing a newline — to a
+ * single space, matching how JSX joins text across line breaks. Same-line
+ * spacing is preserved (it is significant between words and placeholders).
+ */
+function collapseJsxWhitespace(s: string): string {
+  return s.replace(/[ \t\r\n]*\n[ \t\r\n]*/g, " ");
+}
+
+/**
+ * The placeholder name for a "simple" interpolation expression, or null when the
+ * expression is anything we won't turn into an ICU `{name}` value (a call, a
+ * ternary, a string literal, a computed member, etc.). Simple == a bare
+ * identifier (`userName`) or a dotted member (`user.firstName` → `firstName`).
+ */
+function simpleInterpName(expr: any): string | null {
+  if (!expr) return null;
+  if (expr.type === "Identifier") return expr.name;
+  if (
+    expr.type === "MemberExpression" &&
+    !expr.computed &&
+    expr.property?.type === "Identifier"
+  ) {
+    return expr.property.name;
+  }
+  return null;
+}
+
+interface CompoundRun {
+  message: string;
+  interpolations: NonNullable<Candidate["interpolations"]>;
+  start: number;
+  end: number;
+}
+
+/**
+ * If a JSX element/fragment's DIRECT children form a single translatable
+ * message — real text interleaved with simple `{identifier}`/`{member}`
+ * interpolations and NO nested elements — assemble it into one ICU message with
+ * `{name}` placeholders and return the overwrite span. Returns null otherwise:
+ *   - pure text (no interpolation) → the per-node JSXText path handles it;
+ *   - a nested JSX element present → rich text, deferred to F4;
+ *   - any non-simple expression (call/ternary/literal/…) → fall back, so we
+ *     never truncate differently than today or invent a bad placeholder.
+ * `{/* … *\/}` comment containers are ignored (neither counted nor disqualifying).
+ */
+function jsxCompoundRun(node: any): CompoundRun | null {
+  const children: any[] = node?.children ?? [];
+  if (children.length === 0) return null;
+
+  let exprCount = 0;
+  let translatableTextCount = 0;
+
+  for (const child of children) {
+    const t = child.type;
+    if (t === "JSXText") {
+      if (isTranslatableString(child.value.trim())) translatableTextCount++;
+      continue;
+    }
+    if (t === "JSXExpressionContainer") {
+      const expr = child.expression;
+      if (expr?.type === "JSXEmptyExpression") continue; // {/* comment */}
+      if (simpleInterpName(expr) === null) return null; // complex expr → not F5
+      exprCount++;
+      continue;
+    }
+    return null; // JSXElement / JSXFragment / spread / etc. → not F5
+  }
+
+  if (exprCount === 0) return null; // pure text → existing JSXText path
+  if (translatableTextCount === 0) return null; // only placeholders/punctuation
+
+  const isContent = (child: any): boolean => {
+    if (child.type === "JSXText") return child.value.trim().length > 0;
+    if (child.type === "JSXExpressionContainer")
+      return child.expression?.type !== "JSXEmptyExpression";
+    return false;
+  };
+  const firstIdx = children.findIndex(isContent);
+  let lastIdx = -1;
+  for (let i = children.length - 1; i >= 0; i--) {
+    if (isContent(children[i])) {
+      lastIdx = i;
+      break;
+    }
+  }
+  if (firstIdx < 0 || lastIdx < firstIdx) return null;
+
+  const interpolations: NonNullable<Candidate["interpolations"]> = [];
+  let message = "";
+  let start = -1;
+  let end = -1;
+
+  for (let i = firstIdx; i <= lastIdx; i++) {
+    const child = children[i];
+    if (child.type === "JSXText") {
+      let text = collapseJsxWhitespace(child.value);
+      let s = child.start;
+      let e = child.end;
+      if (i === firstIdx) {
+        s = child.start + (child.value.length - child.value.trimStart().length);
+        text = text.replace(/^\s+/, "");
+      }
+      if (i === lastIdx) {
+        e = child.end - (child.value.length - child.value.trimEnd().length);
+        text = text.replace(/\s+$/, "");
+      }
+      message += text;
+      if (start < 0) start = s;
+      end = e;
+    } else if (child.type === "JSXExpressionContainer") {
+      const expr = child.expression;
+      if (expr?.type === "JSXEmptyExpression") continue;
+      const name = simpleInterpName(expr)!;
+      message += `{${name}}`;
+      interpolations.push({ name, exprStart: expr.start, exprEnd: expr.end });
+      if (start < 0) start = child.start; // include the `{`
+      end = child.end; // include the `}`
+    }
+  }
+
+  if (start < 0 || end < 0) return null;
+  return { message, interpolations, start, end };
+}
+
 export function recordCandidates(source: string, filePath: string): Candidate[] {
   const candidates: Candidate[] = [];
 
@@ -365,10 +494,31 @@ export function recordCandidates(source: string, filePath: string): Candidate[] 
     });
   }
 
+  // Shared by the JSXElement and JSXFragment visitors: record a compound
+  // interpolation message (text + simple `{expr}` siblings) as one candidate.
+  function recordCompoundVisitor(path: any): void {
+    const run = jsxCompoundRun(path.node);
+    if (!run) return;
+    record(run.start, run.end, "jsx-compound", run.message, path, {
+      interpolations: run.interpolations,
+    });
+  }
+
   traverse(ast, {
+    JSXElement(path: any) {
+      recordCompoundVisitor(path);
+    },
+
+    JSXFragment(path: any) {
+      recordCompoundVisitor(path);
+    },
+
     JSXText(path: any) {
       const raw: string = path.node.value;
       if (!raw.trim()) return;
+      // Owned by a compound run (text + {expr}); the JSXElement/JSXFragment
+      // visitor records it as one message — don't also emit the fragment.
+      if (jsxCompoundRun(path.parent)) return;
       const leading = raw.length - raw.trimStart().length;
       const trailing = raw.length - raw.trimEnd().length;
       record(

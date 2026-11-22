@@ -118,3 +118,29 @@ describe("apply transformSource — corruption regressions", () => {
     expect(res.skippedComponents.length).toBeGreaterThan(0);
   });
 });
+
+describe("apply transformSource — compound interpolation (F5)", () => {
+  it("wraps a text+interpolation sentence into one t() call with a value placeholder", () => {
+    const src = `function A(){ const userName='x'; return <p>Welcome back, {userName}!</p>; }`;
+    const out = run(src);
+    expect(out).toMatch(/\{t\("welcome_back_username_[a-z0-9]{6}", \{ userName: userName \}\)\}/);
+    expect(out).not.toContain("Welcome back"); // the raw sentence is gone
+    expect(out).toContain("useTranslations");
+    expect(parseOk(out)).toBe(true);
+  });
+
+  it("de-duplicates a repeated placeholder in the values object", () => {
+    const src = `function A(){ const name='x'; return <p>Hi {name}, bye {name}</p>; }`;
+    const out = run(src);
+    expect(out).toContain("{ name: name }");
+    expect(out).not.toContain("name: name, name: name");
+    expect(parseOk(out)).toBe(true);
+  });
+
+  it("passes a member expression as the placeholder value", () => {
+    const src = `function A(){ const user={firstName:'x'}; return <p>Hi {user.firstName}</p>; }`;
+    const out = run(src);
+    expect(out).toContain("{ firstName: user.firstName }");
+    expect(parseOk(out)).toBe(true);
+  });
+});
