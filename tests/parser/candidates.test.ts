@@ -214,4 +214,37 @@ describe("recordCandidates — compound interpolation (F5)", () => {
     );
     expect(c?.autoContext).toBe("button label");
   });
+
+  it("disambiguates two DIFFERENT expressions that share a leaf name", () => {
+    const src = `function A(){ const sender={name:'a'},receiver={name:'b'}; return <p>From {sender.name} to {receiver.name}</p>; }`;
+    const c = find(recordCandidates(src, "A.tsx"), "From {name} to {name2}");
+    expect(c).toBeDefined();
+    expect(c!.role).toBe("jsx-compound");
+    expect(c!.interpolations?.map((i) => i.name)).toEqual(["name", "name2"]);
+    const [i0, i1] = c!.interpolations!;
+    expect(src.slice(i0.exprStart, i0.exprEnd)).toBe("sender.name");
+    expect(src.slice(i1.exprStart, i1.exprEnd)).toBe("receiver.name");
+  });
+
+  it("shares ONE placeholder when the same expression text repeats", () => {
+    const src = `function A(){ const name='x'; return <p>{name} and {name} again</p>; }`;
+    const c = find(recordCandidates(src, "A.tsx"), "{name} and {name} again");
+    expect(c).toBeDefined();
+    expect(c!.interpolations?.map((i) => i.name)).toEqual(["name"]);
+  });
+
+  it("drops newline-only whitespace at an interpolation boundary (matches React rendering)", () => {
+    const src = [
+      "function A(){ const count=3; return (",
+      "  <p>",
+      "    You have",
+      "    {count}",
+      "    new messages",
+      "  </p>",
+      "); }",
+    ].join("\n");
+    const c = find(recordCandidates(src, "A.tsx"), "You have{count}new messages");
+    expect(c).toBeDefined();
+    expect(c!.role).toBe("jsx-compound");
+  });
 });

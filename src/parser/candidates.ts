@@ -311,12 +311,29 @@ function enclosingComponentPath(path: any): string {
 }
 
 /**
- * Collapse JSX-insignificant whitespace — any run containing a newline — to a
- * single space, matching how JSX joins text across line breaks. Same-line
- * spacing is preserved (it is significant between words and placeholders).
+ * Render a single JSXText node to the string React actually displays — a port of
+ * Babel's `cleanJSXElementLiteralChild`: split on newlines, drop whitespace-only
+ * lines, trim whitespace adjacent to a newline, and join the surviving lines with
+ * a single space. Same-line leading/trailing spaces are preserved (significant
+ * between words); newline-only whitespace at a boundary collapses to NOTHING, not
+ * a space — so a message assembled from these matches the rendered output.
  */
-function collapseJsxWhitespace(s: string): string {
-  return s.replace(/[ \t\r\n]*\n[ \t\r\n]*/g, " ");
+function cleanJsxText(value: string): string {
+  const lines = value.split(/\r\n|\n|\r/);
+  let lastNonEmpty = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/[^ \t]/.test(lines[i])) lastNonEmpty = i;
+  }
+  let out = "";
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i].replace(/\t/g, " ");
+    if (i !== 0) line = line.replace(/^ +/, "");
+    if (i !== lines.length - 1) line = line.replace(/ +$/, "");
+    if (!line) continue;
+    if (i !== lastNonEmpty) line += " ";
+    out += line;
+  }
+  return out;
 }
 
 /**
@@ -338,6 +355,44 @@ function simpleInterpName(expr: any): string | null {
   return null;
 }
 
+interface RawInterp {
+  baseName: string;
+  exprStart: number;
+  exprEnd: number;
+}
+
+/**
+ * Assign each interpolation a placeholder name UNIQUE per distinct expression
+ * text. Interpolations with identical source text share one name (and one values
+ * entry — `{name} … {name}` → one `name:`). Distinct expressions that would
+ * collide on a base name (e.g. `sender.name` and `receiver.name` → both "name")
+ * are numbered (`name`, `name2`, …) so neither value is silently dropped at apply
+ * time. Returns per-occurrence `names` (to build the message) and the
+ * de-duplicated `interpolations` (one per unique name, first-occurrence order).
+ */
+function assignInterpNames(
+  raws: RawInterp[],
+  source: string,
+): { names: string[]; interpolations: NonNullable<Candidate["interpolations"]> } {
+  const nameByExpr = new Map<string, string>();
+  const used = new Set<string>();
+  const names: string[] = [];
+  const interpolations: NonNullable<Candidate["interpolations"]> = [];
+  for (const r of raws) {
+    const exprText = source.slice(r.exprStart, r.exprEnd);
+    let name = nameByExpr.get(exprText);
+    if (name === undefined) {
+      name = r.baseName;
+      for (let n = 2; used.has(name); n++) name = `${r.baseName}${n}`;
+      used.add(name);
+      nameByExpr.set(exprText, name);
+      interpolations.push({ name, exprStart: r.exprStart, exprEnd: r.exprEnd });
+    }
+    names.push(name);
+  }
+  return { names, interpolations };
+}
+
 interface CompoundRun {
   message: string;
   interpolations: NonNullable<Candidate["interpolations"]>;
@@ -356,7 +411,7 @@ interface CompoundRun {
  *     never truncate differently than today or invent a bad placeholder.
  * `{/* … *\/}` comment containers are ignored (neither counted nor disqualifying).
  */
-function jsxCompoundRun(node: any): CompoundRun | null {
+function jsxCompoundRun(node: any, source: string): CompoundRun | null {
   const children: any[] = node?.children ?? [];
   if (children.length === 0) return null;
 
@@ -398,40 +453,42 @@ function jsxCompoundRun(node: any): CompoundRun | null {
   }
   if (firstIdx < 0 || lastIdx < firstIdx) return null;
 
-  const interpolations: NonNullable<Candidate["interpolations"]> = [];
-  let message = "";
-  let start = -1;
-  let end = -1;
+  // Span: the first/last content child, trimming only the OUTER whitespace so
+  // surrounding indentation stays in the source, outside the `{t()}`.
+  const firstChild = children[firstIdx];
+  const lastChild = children[lastIdx];
+  const start =
+    firstChild.type === "JSXText"
+      ? firstChild.start + (firstChild.value.length - firstChild.value.trimStart().length)
+      : firstChild.start;
+  const end =
+    lastChild.type === "JSXText"
+      ? lastChild.end - (lastChild.value.length - lastChild.value.trimEnd().length)
+      : lastChild.end;
 
+  // Message: render each text node the way React does; expressions become
+  // `{name}` placeholders with names disambiguated by expression text.
+  const raws: RawInterp[] = [];
+  const tokens: Array<{ text: string } | { expr: true }> = [];
   for (let i = firstIdx; i <= lastIdx; i++) {
     const child = children[i];
     if (child.type === "JSXText") {
-      let text = collapseJsxWhitespace(child.value);
-      let s = child.start;
-      let e = child.end;
-      if (i === firstIdx) {
-        s = child.start + (child.value.length - child.value.trimStart().length);
-        text = text.replace(/^\s+/, "");
-      }
-      if (i === lastIdx) {
-        e = child.end - (child.value.length - child.value.trimEnd().length);
-        text = text.replace(/\s+$/, "");
-      }
-      message += text;
-      if (start < 0) start = s;
-      end = e;
+      tokens.push({ text: cleanJsxText(child.value) });
     } else if (child.type === "JSXExpressionContainer") {
       const expr = child.expression;
-      if (expr?.type === "JSXEmptyExpression") continue;
-      const name = simpleInterpName(expr)!;
-      message += `{${name}}`;
-      interpolations.push({ name, exprStart: expr.start, exprEnd: expr.end });
-      if (start < 0) start = child.start; // include the `{`
-      end = child.end; // include the `}`
+      if (expr?.type === "JSXEmptyExpression") continue; // comment between words
+      raws.push({ baseName: simpleInterpName(expr)!, exprStart: expr.start, exprEnd: expr.end });
+      tokens.push({ expr: true });
     }
   }
 
-  if (start < 0 || end < 0) return null;
+  const { names, interpolations } = assignInterpNames(raws, source);
+  let message = "";
+  let k = 0;
+  for (const tok of tokens) {
+    message += "text" in tok ? tok.text : `{${names[k++]}}`;
+  }
+
   return { message, interpolations, start, end };
 }
 
@@ -497,7 +554,7 @@ export function recordCandidates(source: string, filePath: string): Candidate[] 
   // Shared by the JSXElement and JSXFragment visitors: record a compound
   // interpolation message (text + simple `{expr}` siblings) as one candidate.
   function recordCompoundVisitor(path: any): void {
-    const run = jsxCompoundRun(path.node);
+    const run = jsxCompoundRun(path.node, source);
     if (!run) return;
     record(run.start, run.end, "jsx-compound", run.message, path, {
       interpolations: run.interpolations,
@@ -518,7 +575,7 @@ export function recordCandidates(source: string, filePath: string): Candidate[] 
       if (!raw.trim()) return;
       // Owned by a compound run (text + {expr}); the JSXElement/JSXFragment
       // visitor records it as one message — don't also emit the fragment.
-      if (jsxCompoundRun(path.parent)) return;
+      if (jsxCompoundRun(path.parent, source)) return;
       const leading = raw.length - raw.trimStart().length;
       const trailing = raw.length - raw.trimEnd().length;
       record(
@@ -571,21 +628,25 @@ export function recordCandidates(source: string, filePath: string): Candidate[] 
       const quasis = path.node.quasis;
       const expressions = path.node.expressions;
 
+      // Disambiguate names the same way the compound path does, so two distinct
+      // expressions sharing a leaf (e.g. `${a.id} / ${b.id}`) never collapse to
+      // one value at apply time.
+      const raws: RawInterp[] = expressions.map((expr: any, i: number) => ({
+        baseName:
+          expr.type === "Identifier"
+            ? expr.name
+            : expr.type === "MemberExpression" && expr.property?.type === "Identifier"
+              ? expr.property.name
+              : `expr${i}`,
+        exprStart: expr.start,
+        exprEnd: expr.end,
+      }));
+      const { names, interpolations } = assignInterpNames(raws, source);
+
       let fullText = "";
-      const interpolations: NonNullable<Candidate["interpolations"]> = [];
       for (let i = 0; i < quasis.length; i++) {
         fullText += quasis[i].value.cooked ?? quasis[i].value.raw;
-        if (i < expressions.length) {
-          const expr = expressions[i];
-          const name =
-            expr.type === "Identifier"
-              ? expr.name
-              : expr.type === "MemberExpression" && expr.property?.type === "Identifier"
-                ? expr.property.name
-                : `expr${i}`;
-          fullText += `{${name}}`;
-          interpolations.push({ name, exprStart: expr.start, exprEnd: expr.end });
-        }
+        if (i < expressions.length) fullText += `{${names[i]}}`;
       }
 
       record(path.node.start, path.node.end, "template", fullText, path, { interpolations });

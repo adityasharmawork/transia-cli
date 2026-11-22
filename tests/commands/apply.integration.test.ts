@@ -143,4 +143,12 @@ describe("apply transformSource — compound interpolation (F5)", () => {
     expect(out).toContain("{ firstName: user.firstName }");
     expect(parseOk(out)).toBe(true);
   });
+
+  it("emits BOTH values when two interpolations share a leaf name", () => {
+    const src = `function A(){ const sender={name:'a'},receiver={name:'b'}; return <p>From {sender.name} to {receiver.name}</p>; }`;
+    const out = run(src);
+    expect(out).toContain("{ name: sender.name, name2: receiver.name }");
+    expect(out).not.toMatch(/\{ name: \w+\.name \}/); // not collapsed to one value
+    expect(parseOk(out)).toBe(true);
+  });
 });
