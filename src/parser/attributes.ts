@@ -9,7 +9,7 @@ export const DEFAULT_EXCLUDED_ATTRIBUTES = new Set<string>([
   "role", "name", "htmlFor", "for", "style", "rel", "target", "method",
   "action", "encType", "accept", "autoComplete", "autocomplete", "slot",
   "itemProp", "itemType", "datatype", "property", "content", "httpEquiv",
-  "charSet", "dir", "value", "tabIndex", "tabindex", "pattern", "width",
+  "charSet", "dir", "lang", "value", "tabIndex", "tabindex", "pattern", "width",
   "height", "maxLength", "maxlength", "minLength", "minlength",
 ]);
 

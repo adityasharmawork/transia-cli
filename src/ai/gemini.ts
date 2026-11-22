@@ -7,7 +7,7 @@ import { buildPromptForRequest } from "./provider.js";
 import { withRetry } from "../utils/retry.js";
 import { logger } from "../utils/logger.js";
 
-const DEFAULT_MODEL = "gemini-2.0-flash";
+export const DEFAULT_MODEL = "gemini-flash-latest";
 
 function getApiUrl(model: string): string {
   return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
